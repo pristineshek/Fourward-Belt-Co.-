@@ -132,6 +132,17 @@ nav a.active .badge{background:var(--ivory);color:var(--brown)}
 .op b{font-family:var(--serif);color:var(--brown);font-size:13px}
 .bigscan{font-size:18px;padding:12px 14px}
 .kpi .label{border:0;padding:0;background:none;text-align:left;border-radius:0}
+.floor{width:100%;height:auto;display:block;background:#FBF8F2;border-radius:10px}
+.floor .belt{stroke-dasharray:6 10;animation:beltmove 1.2s linear infinite}
+.floor .belt.slow{animation-duration:2.4s}
+.floor .tok{animation:tokpulse 1.6s ease-in-out infinite}
+.floor .run{animation:runblink 1s ease-in-out infinite}
+@keyframes beltmove{to{stroke-dashoffset:-32}}
+@keyframes tokpulse{50%{opacity:.55}}
+@keyframes runblink{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.floor .belt,.floor .tok,.floor .run{animation:none}}
+.qbtn{display:inline-flex;align-items:center;gap:6px;background:var(--white);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:13px}
+.qbtn button{padding:2px 9px;font-size:14px;line-height:1.2}
 .demo{font-size:12px;color:var(--muted);margin-top:18px;border-top:1px solid var(--line);padding-top:12px;line-height:1.6}
 .userbox{overflow-wrap:anywhere;margin-top:18px;border-top:1px solid var(--line);padding:12px 10px 0;font-size:13px}
 /* Barcode labels */
@@ -680,10 +691,18 @@ shopfloor(){
 
 /* ---------- SMART FACTORY: capacity, what-if, line balance ---------- */
 factory(){
-  const tabs=[['overview','Factory overview'],['whatif','What-if planner'],['balance','Line balance'],['method','Methodology']];
+  const tabs=[['floor','Floor view'],['overview','Factory overview'],['whatif','What-if planner'],['balance','Line balance'],['method','Methodology']];
   const base=capacity(sfBase()), scen=capacity(sfScen);
   const head=`<h1>Smart Factory</h1><div class="sub">Houston assembly line: six stations, mixed models. Engineering standards are proposed in the team's Smart Factory guide<span class="sim">SIMULATED</span></div>
     <div class="subtabs">${tabs.map(([k,l])=>`<button class="${sfTab===k?'on':''}" onclick="sfTab='${k}';render()">${l}</button>`).join('')}</div>`;
+  if(sfTab==='floor'){
+    const c=capacity(sfScen), q=(k,l)=>`<span class="qbtn">${l} <button class="ghost" onclick="sfScen.${k}=Math.max(1,sfScen.${k}-1);render()">−</button><b>${sfScen[k]}</b><button class="ghost" onclick="sfScen.${k}=Math.min(3,sfScen.${k}+1);render()">+</button></span>`;
+    return head+`<div class="card"><div class="row" style="align-items:center;margin-bottom:12px">
+        <div style="flex:3"><h2 style="margin:0">Houston assembly line</h2><div class="muted" style="font-size:12px">${c.total} units/day plan · takt ${c.takt==null?'N/A':c.takt.toFixed(2)+' min'} · live queues from work orders</div></div>
+        <div style="flex:2;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">${q('sewMachines','Sewing machines')}${q('sewOperators','Sewing operators')}</div></div>
+      ${floorSVG(c)}
+      <div class="muted" style="font-size:12px;margin-top:8px">Machines and people are drawn from the scenario (change them here or on the What-if tab). Queue blocks = units waiting at each station on open work orders. A blinking dot means someone has started a job there on the Scan Station. Hover a station for details.</div></div>`;
+  }
   if(sfTab==='overview'){
     const live=sfLiveDemand(), src=sfSource==='wo'?{...sfBase(),demand:live}:sfBase(), c=capacity(src);
     return head+`<div class="card noprint"><div class="row"><div style="max-width:340px"><label>Demand source</label>
@@ -1017,7 +1036,7 @@ const DEFECTS=[['CUT_SHORT','Strap too short / wrong cut'],['WRONG_THREAD','Wron
 const FAMS=['leather','canvas','collar'], FAM_LABEL={leather:'Leather',canvas:'Canvas',collar:'Collar'}, FAM_COLOR={leather:'#5A351C',canvas:'#C18A4B',collar:'#6E7A4E'};
 const SF_BASE={demand:{leather:50,canvas:110,collar:40},shift:420,sewMachines:1,sewOperators:1,s3Setups:4,s3SetupMin:12,scrapPct:0,overtime:0};
 const LABOR_RATE=18; // $/hour, SIMULATED; overtime paid at 1.5x
-let sfTab='overview', sfSource='sim', sfScen=JSON.parse(JSON.stringify(SF_BASE)), sf={station:'',wo:''}, rptFrom='', rptTo='';
+let sfTab='floor', sfSource='sim', sfScen=JSON.parse(JSON.stringify(SF_BASE)), sf={station:'',wo:''}, rptFrom='', rptTo='';
 const sfBase=()=>JSON.parse(JSON.stringify(SF_BASE));
 const family=sku=>sku.startsWith('FD-')?'collar':sku.startsWith('FB-CV')?'canvas':'leather';
 const stName=id=>STATIONS.find(x=>x.id===id)?.name||id;
@@ -1051,6 +1070,82 @@ function sfLiveDemand(){
     const l=w.ops[w.ops.length-1], done=l.good+l.reworkPassed+w.ops.reduce((a,o)=>a+o.scrap,0);
     d[family(w.sku)]+=Math.max(0,w.qty-done); });
   return d;
+}
+/* ---------- Floor view: the line drawn with symbols ---------- */
+const ICON={
+  person:(x,y,c='#171717')=>`<g transform="translate(${x} ${y})"><circle cx="0" cy="-15" r="6" fill="${c}"/><path d="M-9 8 Q-9 -6 0 -6 Q9 -6 9 8 Z" fill="${c}"/></g>`,
+  personIdle:(x,y)=>`<g transform="translate(${x} ${y})" opacity=".35"><circle cx="0" cy="-15" r="6" fill="none" stroke="#171717" stroke-width="1.5" stroke-dasharray="2 2"/><path d="M-9 8 Q-9 -6 0 -6 Q9 -6 9 8 Z" fill="none" stroke="#171717" stroke-width="1.5" stroke-dasharray="2 2"/></g>`,
+  sewing:(x,y,on)=>`<g transform="translate(${x} ${y})"><rect x="-22" y="8" width="44" height="7" rx="2" fill="#5A351C"/>
+    <path d="M-18 8 V-14 Q-18 -20 -12 -20 H14 Q18 -20 18 -16 V-8 H8 V-12 H-8 V8 Z" fill="${on?'#171717':'#6F6458'}"/>
+    <line x1="13" y1="-8" x2="13" y2="4" stroke="#C9CACC" stroke-width="2"/><circle cx="-8" cy="-24" r="4" fill="#C18A4B"/><line x1="-8" y1="-20" x2="-8" y2="-20" stroke="#fff"/></g>`,
+  kitting:(x,y)=>`<g transform="translate(${x} ${y})"><rect x="-22" y="-14" width="44" height="28" rx="3" fill="#C18A4B"/><path d="M-22 -2 H22 M-7 -14 V14 M8 -14 V14" stroke="#5A351C" stroke-width="2"/><rect x="-18" y="-11" width="8" height="6" fill="#171717"/><rect x="11" y="2" width="8" height="8" fill="#C9CACC"/></g>`,
+  cut:(x,y)=>`<g transform="translate(${x} ${y})"><rect x="-24" y="6" width="48" height="8" rx="2" fill="#5A351C"/><circle cx="-8" cy="-6" r="5" fill="none" stroke="#171717" stroke-width="3"/><circle cx="8" cy="-6" r="5" fill="none" stroke="#171717" stroke-width="3"/><path d="M-4 -2 L12 -22 M4 -2 L-12 -22" stroke="#8D8F93" stroke-width="3" stroke-linecap="round"/></g>`,
+  ratchet:(x,y)=>`<g transform="translate(${x} ${y})"><rect x="-24" y="6" width="48" height="8" rx="2" fill="#5A351C"/><rect x="-18" y="-12" width="36" height="12" rx="2" fill="#171717"/><path d="M-15 -12 v-5 h4 v5 M-7 -12 v-5 h4 v5 M1 -12 v-5 h4 v5 M9 -12 v-5 h4 v5" fill="#171717"/></g>`,
+  buckle:(x,y)=>`<g transform="translate(${x} ${y})"><rect x="-24" y="6" width="48" height="8" rx="2" fill="#5A351C"/><rect x="-14" y="-20" width="28" height="22" rx="4" fill="#D9AE55" stroke="#9C7224" stroke-width="2"/><rect x="-8" y="-14" width="16" height="10" rx="2" fill="#5A351C"/></g>`,
+  qc:(x,y)=>`<g transform="translate(${x} ${y})"><rect x="-24" y="6" width="48" height="8" rx="2" fill="#5A351C"/><circle cx="-2" cy="-10" r="10" fill="#fff" stroke="#171717" stroke-width="3"/><path d="M5 -3 L14 6" stroke="#171717" stroke-width="4" stroke-linecap="round"/><path d="M-7 -10 l3 3 l6 -7" fill="none" stroke="#5E6B2F" stroke-width="2.5"/></g>`,
+  shelf:(x,y)=>`<g transform="translate(${x} ${y})"><path d="M-30 -30 V30 M30 -30 V30 M-30 -10 H30 M-30 10 H30 M-30 30 H30" stroke="#5A351C" stroke-width="3"/><rect x="-24" y="-24" width="14" height="12" fill="#C18A4B"/><rect x="-6" y="-24" width="12" height="12" fill="#171717"/><rect x="10" y="-4" width="14" height="12" fill="#C9CACC"/><rect x="-22" y="16" width="16" height="12" fill="#6E7A4E"/></g>`,
+  warehouse:(x,y)=>`<g transform="translate(${x} ${y})"><path d="M-32 -6 L0 -30 L32 -6 V30 H-32 Z" fill="#171717"/><rect x="-14" y="6" width="28" height="24" fill="#F7F2E8"/><path d="M-14 14 H14 M-14 22 H14" stroke="#171717"/></g>`,
+  bin:(x,y,c)=>`<g transform="translate(${x} ${y})"><path d="M-16 -10 H16 L12 14 H-12 Z" fill="${c}"/><rect x="-18" y="-14" width="36" height="5" rx="2" fill="${c}"/></g>`
+};
+function floorSVG(c){
+  const W=1180,H=470, X0=215, gap=(W-430)/5, yLine=300;
+  const ST={S1:'kitting',S2:'cut',S3:'sewing',S4:'ratchet',S5:'buckle',S6:'qc'};
+  const xs=c.st.map((_,i)=>X0+i*gap);
+  const queue=id=>db.work_orders.reduce((a,w)=>a+w.ops.filter(o=>o.wc===id).reduce((b,o)=>b+opAvailable(o),0),0);
+  const running=id=>db.work_orders.filter(w=>w.ops.some(o=>o.wc===id&&o.status==='Running')).map(w=>w.id);
+  const held=db.work_orders.reduce((a,w)=>a+w.ops.reduce((b,o)=>b+o.hold,0),0), scrap=db.work_orders.reduce((a,w)=>a+w.ops.reduce((b,o)=>b+o.scrap,0),0);
+  const rm=db.items.filter(i=>i.type==='Component').reduce((a,i)=>a+(i.unit==='ea'?onHand(i.sku,'HOU'):0),0);
+  const fg=db.items.filter(i=>i.type==='Finished').reduce((a,i)=>a+onHand(i.sku,'HOU'),0);
+  const col=u=>u>1?'#9B3B26':u>=.85?'#C89B2C':'#5E6B2F';
+  let g=`<defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#6F6458"/></marker></defs>`;
+  // conveyor
+  g+=`<line x1="70" x2="${W-70}" y1="${yLine}" y2="${yLine}" stroke="#E4DCCB" stroke-width="14" stroke-linecap="round"/>
+      <line class="belt ${c.total?'':'slow'}" x1="70" x2="${W-70}" y1="${yLine}" y2="${yLine}" stroke="#6F6458" stroke-width="3"/>`;
+  // raw materials + finished goods
+  g+=ICON.shelf(70,yLine-70)+`<text x="70" y="${yLine-112}" font-size="12" text-anchor="middle" font-weight="600" fill="#5A351C">Raw materials</text><text x="70" y="${yLine+32}" font-size="11" text-anchor="middle" fill="#6F6458">${fmtN(rm)} parts</text>`;
+  g+=ICON.warehouse(W-70,yLine-70)+`<text x="${W-70}" y="${yLine-112}" font-size="12" text-anchor="middle" font-weight="600" fill="#5A351C">Finished goods</text><text x="${W-70}" y="${yLine+32}" font-size="11" text-anchor="middle" fill="#6F6458">${fmtN(fg)} in Houston</text>`;
+  // stations
+  c.st.forEach((x,i)=>{
+    const cx=xs[i], u=x.util, bott=c.total&&x.id===c.bottleneck.id, run=running(x.id), qn=queue(x.id);
+    const machines=x.id==='S3'?sfScen.sewMachines:1, people=x.id==='S3'?sfScen.sewOperators:1;
+    const tip=`${x.id} ${x.name}: ${isFinite(u)?pct(u):'—'} load (${x.run.toFixed(1)} run + ${x.setup} setup of ${x.avail} min) · queue ${qn} · ${run.length?'running '+run.join(', '):'idle'}`;
+    g+=`<g><title>${esc(tip)}</title><rect x="${cx-62}" y="${yLine-178}" width="124" height="160" rx="12" fill="#fff" stroke="${bott?'#9B3B26':'#E4DCCB'}" stroke-width="${bott?2.5:1.5}"/>`;
+    g+=`<text x="${cx}" y="${yLine-158}" font-size="11" text-anchor="middle" fill="#6F6458" letter-spacing="1">${x.id}</text><text x="${cx}" y="${yLine-142}" font-size="13" text-anchor="middle" font-family="Georgia,serif" fill="#5A351C">${esc(x.name)}</text>`;
+    // machines
+    if(x.id==='S3'){ for(let k=0;k<machines;k++){ const mx=cx+(k-(machines-1)/2)*36; g+=`<g transform="translate(${mx} ${yLine-95}) scale(${machines>1?.72:1})">${ICON.sewing(0,0,k<Math.min(machines,people))}</g>`; } }
+    else g+=ICON[ST[x.id]](cx,yLine-95);
+    // people
+    const usable=x.id==='S3'?Math.min(machines,people):1;
+    for(let k=0;k<people;k++){ const px=cx+(k-(people-1)/2)*24; g+= k<usable? ICON.person(px,yLine-42,'#171717') : ICON.person(px,yLine-42,'#8D8F93'); }
+    if(x.id==='S3'&&machines>people) for(let k=people;k<machines;k++){ const px=cx+(k-(machines-1)/2)*24; g+=ICON.personIdle(px,yLine-42); }
+    // running dot
+    if(run.length) g+=`<circle class="run" cx="${cx+50}" cy="${yLine-160}" r="5" fill="#C89B2C"/>`;
+    // queue blocks on the belt (before the station)
+    const shown=Math.min(qn,6);
+    for(let k=0;k<shown;k++) g+=`<rect class="tok" x="${cx-gap/2+8+k*10}" y="${yLine-6}" width="8" height="12" rx="2" fill="#5A351C"/>`;
+    if(qn>6) g+=`<text x="${cx-gap/2+74}" y="${yLine+4}" font-size="10" fill="#5A351C">+${qn-6}</text>`;
+    // utilization bar
+    const bw=96, by=yLine+22;
+    g+=`<rect x="${cx-bw/2}" y="${by}" width="${bw}" height="8" rx="4" fill="#EFE8DC"/><rect x="${cx-bw/2}" y="${by}" width="${Math.min(1,isFinite(u)?u:0)*bw}" height="8" rx="4" fill="${col(u)}"/>
+      <text x="${cx}" y="${by+24}" font-size="14" text-anchor="middle" font-family="Georgia,serif" fill="${col(u)}">${isFinite(u)?pct(u):'—'}</text>`;
+    if(x.id==='S3'&&people>machines) g+=`<text x="${cx}" y="${by+40}" font-size="10" text-anchor="middle" fill="#9B3B26">${people-machines===1?'1 operator':people-machines+' operators'} without a machine</text>`;
+    if(x.id==='S3'&&machines>people) g+=`<text x="${cx}" y="${by+40}" font-size="10" text-anchor="middle" fill="#9B3B26">${machines-people===1?'1 machine':machines-people+' machines'} without an operator</text>`;
+    if(bott) g+=`<rect x="${cx-40}" y="${yLine-198}" width="80" height="18" rx="9" fill="#9B3B26"/><text x="${cx}" y="${yLine-185}" font-size="10" text-anchor="middle" fill="#fff" font-weight="600" letter-spacing=".5">BOTTLENECK</text>`;
+    g+=`</g>`;
+  });
+  // collar bypass: over the top of S4
+  { const xa=xs[2]+30, xb=xs[4]-30, top=yLine-178;
+    g+=`<path d="M${xa} ${top} C ${xa+30} ${top-70}, ${xb-30} ${top-70}, ${xb} ${top}" fill="none" stroke="#6E7A4E" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arr)"/>
+      <rect x="${(xa+xb)/2-70}" y="${top-72}" width="140" height="20" rx="10" fill="#FBF8F2"/>
+      <text x="${(xa+xb)/2}" y="${top-58}" font-size="12" text-anchor="middle" fill="#6E7A4E" font-weight="600">Dog collars skip S4</text>`; }
+  // quality hold + scrap bins under QC
+  const qx=xs[5];
+  g+=ICON.bin(qx-34,yLine+102,'#C89B2C')+ICON.bin(qx+34,yLine+102,'#9B3B26')+
+     `<text x="${qx-34}" y="${yLine+134}" font-size="11" text-anchor="middle" fill="#171717">Hold ${held}</text><text x="${qx+34}" y="${yLine+134}" font-size="11" text-anchor="middle" fill="#171717">Scrap ${scrap}</text>`;
+  // legend
+  const lg=[[ICON.person(0,8),'Operator'],[ICON.person(0,8,'#8D8F93'),'Operator, no machine'],[`<rect x="-4" y="-6" width="8" height="12" rx="2" fill="#5A351C"/>`,'Unit in queue'],[`<circle cx="0" cy="0" r="5" fill="#C89B2C"/>`,'Job running']];
+  lg.forEach(([ic,t],k)=>{ const lx=40+k*170; g+=`<g transform="translate(${lx} ${H-22}) scale(.8)">${ic}</g><text x="${lx+16}" y="${H-18}" font-size="11" fill="#6F6458">${t}</text>`; });
+  return `<svg class="floor" viewBox="0 0 ${W} ${H}" role="img" aria-label="Factory floor view">${g}</svg>`;
 }
 function stationCard(x,i){
   const cls=x.util>1?'red':x.util>=.85?'amber':'';
