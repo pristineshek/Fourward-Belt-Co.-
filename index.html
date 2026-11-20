@@ -143,6 +143,9 @@ nav a.active .badge{background:var(--ivory);color:var(--brown)}
 @media (prefers-reduced-motion:reduce){.floor .belt,.floor .tok,.floor .run{animation:none}}
 .qbtn{display:inline-flex;align-items:center;gap:6px;background:var(--white);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:13px}
 .qbtn button{padding:2px 9px;font-size:14px;line-height:1.2}
+.stockmsg{margin-top:12px;padding:10px 12px;border-radius:8px;font-size:13px;line-height:1.45}
+.stockmsg b{font-size:14px}
+.stockmsg.ok{background:var(--ok-bg);color:var(--ok)}.stockmsg.warn{background:var(--warn-bg);color:var(--warn)}.stockmsg.bad{background:var(--bad-bg);color:var(--bad)}
 .demo{font-size:12px;color:var(--muted);margin-top:18px;border-top:1px solid var(--line);padding-top:12px;line-height:1.6}
 .userbox{overflow-wrap:anywhere;margin-top:18px;border-top:1px solid var(--line);padding:12px 10px 0;font-size:13px}
 /* Barcode labels */
@@ -226,8 +229,9 @@ const SHOP_PHOTOS = {
 const STAFF=['admin','staff'], ADMIN=['admin'], CUST=['customer'];
 const MODULES = [
   {group:'Overview',   id:'dashboard',  name:'Dashboard',      r:STAFF},
+  {group:'Overview',   id:'reports',    name:'Reports',        r:STAFF},
   {group:'Sell',       id:'pos',        name:'Point of Sale',  r:STAFF},
-  {group:'Sell',       id:'pickups',    name:'Pickup Orders',  r:STAFF},
+  {group:'Sell',       id:'pickups',    name:'Sales Orders',   r:STAFF},
   {group:'Sell',       id:'sales',      name:'Sales History',  r:STAFF},
   {group:'Sell',       id:'returns',    name:'Returns',        r:STAFF},
   {group:'Sell',       id:'customers',  name:'Customers',      r:STAFF},
@@ -391,7 +395,7 @@ const Auth = {
     if(next.length<8) throw new Error('New password must be at least 8 characters.');
     u.salt=newSalt(); u.hash=await sha256(u.salt+next); save();
   },
-  async signOut(){ showLoader('Signing out…'); await wait(600); hideLoader(); const u=this.user(); if(u) loginTab=u.role==='customer'?'customer':'staff'; session=null; try{ sessionStorage.removeItem(SESSION_KEY); }catch(e){} history.replaceState(null,'',location.pathname+location.search); render(); },
+  async signOut(){ cart={store:null,lines:[]}; showLoader('Signing out…'); await wait(600); hideLoader(); const u=this.user(); if(u) loginTab=u.role==='customer'?'customer':'staff'; session=null; try{ sessionStorage.removeItem(SESSION_KEY); }catch(e){} history.replaceState(null,'',location.pathname+location.search); render(); },
   user(){ return session && db.users?.find(u=>u.email===session.email); },
 };
 
@@ -481,7 +485,7 @@ const VIEWS = {
 dashboard(){
   const {rev,cogs} = totals();
   const low = db.items.filter(i=>totalOnHand(i.sku) < i.reorder);
-  const openPO = db.purchase_orders.filter(p=>p.status==='Open').length;
+  const openPO = db.purchase_orders.filter(p=>p.status==='Sent').length;
   return `<h1>Dashboard</h1><div class="sub">Every number here is calculated from the data in the system.</div>
   <div class="grid g4">
     ${kpi('Net revenue',money(rev))}${kpi('COGS',money(cogs))}
@@ -550,12 +554,23 @@ pos(){
 },
 
 pickups(){
-  const list=db.orders.filter(o=>pickFilter==='Open'? ['Placed','Ready'].includes(o.status) : true).slice().reverse();
-  return `<h1>Pickup Orders</h1><div class="sub">Orders customers placed in the portal.</div>
+  const list=db.orders.filter(o=>pickFilter==='Open'? ['Placed','Ready','Fulfilled'].includes(o.status) : true).slice().reverse();
+  const fin=db.items.filter(i=>i.type==='Finished'), stores=db.locations.filter(l=>l.type==='Store');
+  const d=soDraft, dsub=round2(d.lines.reduce((a,l)=>a+item(l.sku).price*l.qty,0));
+  return `<h1>Sales Orders</h1><div class="sub">Orders for store pickup, from customers in the portal or entered by staff. Status: Placed → Ready → Fulfilled → Closed (or Cancelled).</div>
+  <div class="card"><h2>New sales order</h2><div class="row">
+    <div><label>Customer</label><select onchange="soDraft.customer=this.value">${opts(db.customers,'id',c=>c.name,d.customer)}</select></div>
+    <div><label>Pickup location</label><select onchange="soDraft.store=this.value;render()">${opts(stores,'id',l=>l.name,d.store)}</select></div>
+    <div style="flex:2"><label>Item</label><select id="soSku">${opts(fin,'sku',i=>i.name+' — '+money(i.price))}</select></div>
+    <div style="max-width:110px"><label>Qty</label><input id="soQty" type="number" min="1" value="1"></div>
+    <div style="flex:0"><button class="ghost" onclick="soAddLine()">Add line</button></div></div>
+    ${d.lines.length? `<table style="margin-top:12px">${d.lines.map((l,k)=>`<tr><td>${l.qty}× ${esc(item(l.sku).name)}</td><td class="n">${money(item(l.sku).price*l.qty)}</td><td><button class="ghost sm" onclick="soDraft.lines.splice(${k},1);render()">✕</button></td></tr>`).join('')}
+      <tr><td><b>Subtotal</b> <span class="muted">(+ ${(loc(d.store).tax*100).toFixed(3).replace(/\.?0+$/,'')}% tax)</span></td><td class="n"><b>${money(dsub)}</b></td><td></td></tr></table>
+      <div style="margin-top:10px"><button onclick="soPlace()">Place order</button></div>`:'<div class="muted" style="margin-top:10px">Add at least one line.</div>'}</div>
   <div class="card noprint"><div class="row"><div style="max-width:220px"><label>Show</label>
     <select onchange="pickFilter=this.value;render()">${['Open','All'].map(t=>`<option ${t===pickFilter?'selected':''}>${t}</option>`).join('')}</select></div></div></div>
   <div class="card">${list.length? `<table><tr><th>Order</th><th>Date</th><th>Customer</th><th>Store</th><th>Items</th><th class="n">Total</th><th>Status</th><th></th></tr>
-    ${list.map(o=>{const sh=shortages(o);return `<tr><td>${esc(o.id)}</td><td>${esc(o.date)}</td>
+    ${list.map(o=>{const sh=shortages(o);return `<tr><td>${esc(o.id)}<div class="muted" style="font-size:11px">${o.source==='Staff'?'Staff entry':'Customer portal'}</div></td><td>${esc(o.date)}</td>
       <td>${esc(db.customers.find(c=>c.id===o.customer)?.name||'')}</td><td>${esc(loc(o.store).name)}</td>
       <td>${o.lines.map(l=>`${l.qty}× ${esc(item(l.sku).name)}`).join('<br>')}
         ${o.status==='Placed'&&sh.length?`<div style="font-size:12px;color:var(--bad);margin-top:4px">Short at store: ${sh.map(x=>x.need+'× '+esc(x.sku)).join(', ')}</div>`:''}</td>
@@ -563,8 +578,31 @@ pickups(){
       <td style="white-space:nowrap">${
         o.status==='Placed'? (sh.length? `<button class="sm" onclick="transferFor('${o.id}')">Transfer from Houston</button> `:`<button class="sm" onclick="setOrder('${o.id}','Ready')">Mark ready</button> `)
           + `<button class="ghost sm" onclick="setOrder('${o.id}','Cancelled')">Cancel</button>`
-        : o.status==='Ready'? `<button class="sm" onclick="pickUp('${o.id}')">Picked up</button> <button class="ghost sm" onclick="setOrder('${o.id}','Cancelled')">Cancel</button>`
+        : o.status==='Ready'? `<button class="sm" onclick="pickUp('${o.id}')">Fulfill (picked up)</button> <button class="ghost sm" onclick="setOrder('${o.id}','Cancelled')">Cancel</button>`
+        : o.status==='Fulfilled'? `<button class="ghost sm" onclick="setOrder('${o.id}','Closed')">Close</button>`
         : ''}</td></tr>`}).join('')}</table>` : '<span class="muted">No orders here.</span>'}</div>`;
+},
+
+reports(){
+  const days=[...Array(14)].map((_,k)=>addDays(today(),k-13)), byDay=days.map(d=>({d,v:db.sales.filter(x=>x.date===d).reduce((a,x)=>a+x.subtotal-x.discount,0)}));
+  const wk=d=>{const x=new Date(d+'T12:00:00');x.setDate(x.getDate()-((x.getDay()+6)%7));return x.toISOString().slice(0,10);};
+  const weeks=[...Array(8)].map((_,k)=>wk(addDays(today(),-7*(7-k)))), byWeek=weeks.map(w=>({d:w,v:db.sales.filter(x=>wk(x.date)===w).reduce((a,x)=>a+x.subtotal-x.discount,0)}));
+  const units={}, rev={}; db.sales.forEach(x=>x.lines.forEach(l=>{units[l.sku]=(units[l.sku]||0)+l.qty; rev[l.sku]=(rev[l.sku]||0)+l.price*l.qty;}));
+  const top=Object.keys(units).sort((a,b)=>units[b]-units[a]).slice(0,8);
+  const low=lowStockRows(), perf=supplierPerf();
+  const bars=(arr,lab)=>{const mx=Math.max(1,...arr.map(x=>x.v));return `<div style="display:flex;align-items:flex-end;gap:6px;height:150px;margin-top:8px">${arr.map(x=>`<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%">
+    <div style="font-size:10px;color:var(--muted)">${x.v?money(x.v).replace('.00',''):''}</div><div title="${esc(x.d)}: ${money(x.v)}" style="width:100%;background:var(--brown);border-radius:4px 4px 0 0;height:${(x.v/mx)*110}px;min-height:${x.v?2:0}px"></div>
+    <div style="font-size:10px;color:var(--muted);margin-top:4px">${lab(x.d)}</div></div>`).join('')}</div>`;};
+  return `<h1>Reports</h1><div class="sub">Manager reports, calculated live from sales, inventory and purchase orders.</div>
+  <div class="grid g2"><div class="card"><h2>Sales by day (last 14 days)</h2>${bars(byDay,d=>d.slice(5))}</div>
+    <div class="card"><h2>Sales by week (last 8 weeks)</h2>${bars(byWeek,d=>'wk '+d.slice(5))}</div></div>
+  <div class="card"><h2>Top-selling items</h2>${top.length? table(['Item',{n:'Units sold'},{n:'Revenue'}],top.map(k=>[item(k).name,{n:units[k]},{n:money(rev[k])}])):'<span class="muted">No sales yet.</span>'}</div>
+  <div class="card"><h2>Low stock: suggested orders</h2>${low.length? table(['Item','Location',{n:'On hand'},{n:'Reorder pt'},{n:'Suggested qty'},'Lead time','Order by','Est. available'],
+    low.map(r=>[r.i.name,r.where,{n:r.oh},{n:r.i.reorder},{n:r.qty},r.lead+' days',{h:r.orderBy<=today()?`<b style="color:var(--bad)">${r.orderBy} (now)</b>`:r.orderBy},r.eta])):'<span class="muted">Nothing below its reorder point.</span>'}
+    <div class="muted" style="font-size:12px;margin-top:8px">Suggested qty = EOQ (or enough to reach the reorder point if larger). Order-by date = date stock is expected to run out, from average daily usage, minus lead time.</div></div>
+  <div class="card"><h2>Inventory by location</h2>${table(['Location',{n:'Units (each)'},{n:'Value at cost'}],db.locations.map(l=>{const u=db.items.reduce((a,i)=>a+(i.unit==='ea'?Math.max(0,onHand(i.sku,l.id)):0),0),v=db.items.reduce((a,i)=>a+Math.max(0,onHand(i.sku,l.id))*unitCost(i.sku),0);return [l.name,{n:fmtN(u)},{n:money(v)}];}))}</div>
+  <div class="card"><h2>Supplier performance</h2>${table(['Supplier',{n:'POs received'},{n:'Quoted lead'},{n:'Avg actual lead'},{n:'On-time'},{n:'Fill rate'}],perf.map(p=>[p.s.name,{n:p.n},{n:p.s.lead+' d'},{n:p.avgLead==null?'—':p.avgLead.toFixed(1)+' d'},{n:p.ontime==null?'—':pct(p.ontime)},{n:p.fill==null?'—':pct(p.fill)}]))}
+    <div class="muted" style="font-size:12px;margin-top:8px">From received purchase orders. Suppliers with no received POs show "—".</div></div>`;
 },
 
 sales(){ return `<h1>Sales History</h1><div class="sub">All completed sales.</div><div class="card">${salesTable(db.sales.slice().reverse())}</div>`
@@ -579,11 +617,12 @@ returns(){
     <div style="flex:0"><button onclick="loadReturn($('#retScan').value)">Find</button></div></div></div>
   ${x? `<div class="card"><h2>Receipt ${esc(x.id)} · ${esc(loc(x.store).name)} · ${esc(x.date)}</h2>
     <div class="muted" style="margin-bottom:10px">Customer: ${esc(db.customers.find(c=>c.id===x.customer)?.name||'')}${x.discount?` · Discount on this sale: ${money(x.discount)} (refunds are reduced to match)`:''}</div>
-    <table><tr><th>Item</th><th class="n">Refund each</th><th class="n">Sold</th><th class="n">Already returned</th><th class="n">Return qty</th><th>Reason (required)</th></tr>
+    <table><tr><th>Item</th><th class="n">Refund each</th><th class="n">Sold</th><th class="n">Already returned</th><th class="n">Return qty</th><th>Reason (required)</th><th>Exchange for</th></tr>
     ${x.lines.map((l,i)=>{const left=l.qty-returnedQty(x.id,l.sku);return `<tr><td>${esc(item(l.sku).name)}</td><td class="n">${money(l.price*(1-ratio))}</td>
       <td class="n">${l.qty}</td><td class="n">${l.qty-left}</td>
       <td class="n"><input id="rq${i}" type="number" min="0" max="${left}" value="0" style="width:70px" ${left?'':'disabled'}></td>
-      <td><select id="rc${i}" ${left?'':'disabled'}>${reasonOpts('return')}</select></td></tr>`}).join('')}</table>
+      <td><select id="rc${i}" ${left?'':'disabled'}>${reasonOpts('return')}</select></td>
+      <td><select id="rx${i}" ${left?'':'disabled'}><option value="">— Refund only —</option>${db.items.filter(z=>z.type==='Finished').map(z=>`<option value="${z.sku}">${esc(z.name)} (${money(z.price)})</option>`).join('')}</select></td></tr>`}).join('')}</table>
     <div class="muted" style="font-size:12px;margin-top:8px">Quality-failure codes write the item off (no restock). Other codes put it back in this store's stock. Every return reverses the revenue, tax and cost of goods.</div>
     <div style="margin-top:14px;display:flex;gap:8px"><button onclick="processReturn()">Process return</button><button class="ghost" onclick="retSale=null;render()">Cancel</button></div></div>` : ''}
   <div class="card"><h2>Returns by reason</h2>${returnsByReason()}</div>
@@ -591,7 +630,7 @@ returns(){
     <select onchange="retFilter=this.value;render()"><option value="all" ${retFilter==='all'?'selected':''}>All returns</option><option value="qf" ${retFilter==='qf'?'selected':''}>Quality failures only</option></select></div></div>
     ${(()=>{const list=(db.returns||[]).filter(r=>retFilter!=='qf'||r.lines.some(l=>l.qf)).slice().reverse();
       return list.length? table(['Return #','Date','Receipt','Store','Lines',{n:'Refund'}],
-        list.map(r=>[r.id,r.date,r.saleId,loc(r.store).name,{h:r.lines.map(l=>`${l.qty}× ${esc(item(l.sku).name)} · <b>${esc(l.reason||'—')}</b>${l.qf?' <span class="pill bad">Quality failure</span>':''}`).join('<br>')},{n:money(r.total)}]))
+        list.map(r=>[r.id,r.date,r.saleId,loc(r.store).name,{h:r.lines.map(l=>`${l.qty}× ${esc(item(l.sku).name)} · <b>${esc(l.reason||'—')}</b>${l.qf?' <span class="pill bad">Quality failure</span>':''}${l.exch?` → exchanged for ${esc(item(l.exch).name)}`:''}`).join('<br>')},{n:money(r.total)}]))
         : '<span class="muted">No returns here yet.</span>';})()}</div>`;
 },
 
@@ -612,7 +651,16 @@ inventory(){
   </div></div>
   <div class="card"><div class="tbl-wrap">${table(['SKU','Item','Unit',...db.locations.map(l=>({n:l.id})),{n:'Total'},'Status'],
     rows.map(i=>{const t=totalOnHand(i.sku);return [i.sku,i.name,i.unit,...db.locations.map(l=>({n:onHand(i.sku,l.id)})),{n:t},
-      {h: t<0?'<span class="pill bad">Backorder</span>': t<i.reorder?'<span class="pill warn">Reorder</span>':'<span class="pill ok">OK</span>'}]}))}</div></div>
+      {h: (t<=0||db.locations.some(l=>onHand(i.sku,l.id)<0))?`<span class="pill bad">Backordered</span><div class="muted" style="font-size:11px">Est. available ${estAvail(i.sku)}</div>`
+        : t<i.reorder?`<span class="pill warn">Reorder</span><div class="muted" style="font-size:11px">Lead time ${leadDays(i)} days</div>`:'<span class="pill ok">OK</span>'}]}))}</div>
+    <div class="muted" style="font-size:12px;margin-top:8px">Backordered = sold or promised beyond stock. Estimated available date = the earliest open PO (or work order) for that item, otherwise today + its lead time.</div></div>
+  <div class="card"><h2>Transfer between locations</h2><div class="row">
+    ${scanBox('#trSku')}<div style="flex:2"><label>Item</label><select id="trSku" onchange="trForm.sku=this.value">${opts(db.items,'sku',i=>i.sku+' — '+i.name,trForm.sku)}</select></div>
+    <div><label>From</label><select id="trFrom" onchange="trForm.from=this.value">${opts(db.locations,'id',l=>l.name,trForm.from)}</select></div>
+    <div><label>To</label><select id="trTo" onchange="trForm.to=this.value">${opts(db.locations,'id',l=>l.name,trForm.to)}</select></div>
+    <div style="max-width:110px"><label>Qty</label><input id="trQty" type="number" min="1" value="${trForm.qty}" onchange="trForm.qty=this.value"></div>
+    <div style="flex:0"><button onclick="transferStock()">Transfer</button></div></div>
+    ${db.transfers.length? `<div style="margin-top:12px">${table(['Transfer','Date','Item','From','To',{n:'Qty'}],db.transfers.slice(-8).reverse().map(t=>[t.id,t.date,item(t.sku).name,loc(t.from).name,loc(t.to).name,{n:t.qty}]))}</div>`:''}</div>
   <div class="card"><h2>Adjust stock</h2><div class="row">
     ${scanBox('#adjSku')}<div style="flex:2"><label>Item</label><select id="adjSku">${opts(db.items,'sku',i=>i.sku+' — '+i.name)}</select></div>
     <div><label>Location</label><select id="adjLoc">${opts(db.locations,'id',l=>l.name)}</select></div>
@@ -620,7 +668,7 @@ inventory(){
     <div><label>Reason</label><select id="adjWhy">${reasonOpts('adjustment')}</select></div>
     <div style="flex:0"><button onclick="adjust()">Save</button></div>
   </div></div>`
-  + todo('Inventory',['Transfers from Houston to the stores','Estimated available date from supplier lead time','Transfers between locations by scanning']);
+  ;
 },
 
 /* ---------- PRODUCTION: build finished goods in Houston from BOM ---------- */
@@ -633,18 +681,24 @@ production(){
     ${kpi('Good units built',m.good)}${kpi('First-pass yield',m.fpy==null?'—':pct(m.fpy))}${kpi('Scrap rate',m.scrapRate==null?'—':pct(m.scrapRate))}
     ${kpi('On-time completion',m.ontime==null?'—':pct(m.ontime))}${kpi('Units on quality hold',m.held)}</div>
   <div class="card"><h2>New work order</h2><div class="row">
-    ${scanBox('#woSku')}<div style="flex:2"><label>Finished item</label><select id="woSku">${opts(finished,'sku',i=>i.name)}</select></div>
-    <div><label>Quantity</label><input id="woQty" type="number" min="1" value="20"></div>
-    <div><label>Due date</label><input id="woDue" type="date" value="${addDays(today(),7)}"></div>
-    <div style="flex:0"><button onclick="createWO()">Create</button></div></div></div>
+    ${scanBox('#woSku')}<div style="flex:2"><label>Finished item</label><select id="woSku" onchange="woForm.sku=this.value;render()">${opts(finished,'sku',i=>i.name,woForm.sku)}</select></div>
+    <div><label>Quantity</label><input id="woQty" type="number" min="1" value="${woForm.qty}" onchange="woForm.qty=Math.max(1,Math.floor(+this.value||1));render()"></div>
+    <div><label>Due date</label><input id="woDue" type="date" value="${woForm.due||addDays(today(),7)}" onchange="woForm.due=this.value"></div>
+    <div><label>Receive finished goods at</label><select id="woLoc" onchange="woForm.loc=this.value">${opts(db.locations,'id',l=>l.name,woForm.loc)}</select></div>
+    <div style="flex:0"><button onclick="createWO()">Create</button></div></div>
+    ${(()=>{const sku=woForm.sku||finished[0].sku, parts=db.boms[sku]||[], q=woForm.qty;
+      return `<h2 style="font-size:14px;margin-top:14px">Bill of materials: ${esc(item(sku).name)} × ${q}</h2>`+table(['Component',{n:'Per unit'},{n:'Needed'},{n:'Houston on hand'},{n:'Unit cost'},{n:'Cost'},''],
+        parts.map(p=>{const need=p.qty*q, oh=onHand(p.sku,'HOU');return [item(p.sku).name,{n:p.qty+' '+item(p.sku).unit},{n:need+' '+item(p.sku).unit},{n:oh},{n:money(item(p.sku).cost)},{n:money(need*item(p.sku).cost)},{h:oh<need?'<span class="pill bad">Short</span>':'<span class="pill ok">OK</span>'}];})
+        .concat([[ {h:'<b>Rolled-up cost</b>'},'','','','',{n:money(unitCost(sku)*q)},{h:`<span class="muted">${money(unitCost(sku))}/unit</span>`}]]));})()}
+    <div class="muted" style="font-size:12px;margin-top:6px">Parts come out of Houston once, when the order is released. Finished goods go to the location you pick, at the rolled-up cost.</div></div>
   ${holds.length? `<div class="card"><h2>Quality holds</h2><div class="muted" style="margin-bottom:8px">Units held for rework. Held units can't be sold until they pass.</div>
     <table><tr><th>Work order</th><th>Item</th><th>Station</th><th class="n">Held</th><th>Reason</th><th></th></tr>
     ${holds.map(({w,o})=>`<tr><td>${esc(w.id)}</td><td>${esc(item(w.sku).name)}</td><td>${esc(o.wc)} ${esc(stName(o.wc))}</td><td class="n">${o.hold}</td><td>${esc(o.lastReason||'')}</td>
       <td style="white-space:nowrap"><button class="sm" onclick="disposeHold('${w.id}','${o.wc}','pass')">Rework → pass 1</button> <button class="ghost sm" onclick="disposeHold('${w.id}','${o.wc}','scrap')">Scrap 1</button></td></tr>`).join('')}</table></div>`:''}
   <div class="card"><h2>Work orders</h2>${db.work_orders.length? `<div class="tbl-wrap"><table>
-    <tr><th>WO</th><th>Item</th><th class="n">Qty</th><th>Due</th><th>Status</th><th>Progress</th><th class="n">Good</th><th class="n">Scrap</th><th></th></tr>
+    <tr><th>WO</th><th>Item</th><th class="n">Qty</th><th>Due · to</th><th>Status</th><th>Progress</th><th class="n">Good</th><th class="n">Scrap</th><th></th></tr>
     ${db.work_orders.slice().reverse().map(w=>{const last=w.ops[w.ops.length-1];return `<tr><td>${esc(w.id)}</td><td>${esc(item(w.sku).name)}<div class="muted" style="font-size:11px">${w.ops.map(o=>o.wc).join(' → ')}</div></td>
-      <td class="n">${w.qty}</td><td>${esc(w.due)}</td><td>${statusPill(woPill(w.status))}</td>
+      <td class="n">${w.qty}</td><td>${esc(w.due)}<div class="muted" style="font-size:11px">${esc(loc(w.loc||'HOU').name)}</div></td><td>${statusPill(woPill(w.status))}</td>
       <td style="font-size:12px">${w.ops.map(o=>`<span title="${esc(stName(o.wc))}" style="color:${o.status==='Done'?'var(--ok)':o.status==='Running'?'var(--warn)':'var(--muted)'}">${o.wc}${o.status==='Done'?'✓':o.status==='Running'?'●':''}</span>`).join(' ')}</td>
       <td class="n">${last.good+last.reworkPassed}</td><td class="n">${w.ops.reduce((a,o)=>a+o.scrap,0)}</td>
       <td style="white-space:nowrap">${w.status==='Planned'?`<button class="sm" onclick="releaseWO('${w.id}')">Release</button> <button class="ghost sm" onclick="cancelWO('${w.id}')">Cancel</button>`:''}
@@ -738,25 +792,38 @@ factory(){
 /* ---------- PURCHASING: create + receive POs into Houston ---------- */
 purchasing(){
   const comps = db.items.filter(i=>i.type==='Component');
-  return `<h1>Purchasing</h1><div class="sub">Order components from suppliers. Received stock goes to Houston.</div>
+  const late=p=>{const d=Math.round((new Date(p.received)-new Date(p.expected))/864e5);return d<=0?`<span class="pill ok">On time${d<0?` (${-d}d early)`:''}</span>`:`<span class="pill bad">${d} day${d>1?'s':''} late</span>`;};
+  return `<h1>Purchasing</h1><div class="sub">Order components from suppliers. Status: Order Sent → Received → Closed. Expected date = order date + supplier's quoted lead time.</div>
   <div class="card"><div class="row">
     ${scanBox('#poSku')}<div style="flex:2"><label>Component</label><select id="poSku" onchange="$('#poQty').value=eoqRec(this.value)||100">${opts(comps,'sku',i=>i.name+' — '+sup(i.supplier).name,poPrefill?.sku)}</select></div>
     <div><label>Quantity <span class="muted">(EOQ)</span></label><input id="poQty" type="number" min="1" value="${poPrefill?.qty||eoqRec(poPrefill?.sku||db.items.find(i=>i.type==='Component').sku)||100}"></div>
-    <div style="flex:0"><button onclick="createPO()">Create PO</button></div>
+    <div style="flex:0"><button onclick="createPO()">Send PO</button></div>
   </div></div>
   <div class="card"><h2>Receive by scan</h2><div class="row"><div style="max-width:360px"><label>Scan an arriving item</label><div class="scanwrap">
     <input placeholder="Scan barcode" onkeydown="if(event.key==='Enter'){receiveScan(this.value);this.value=''}">${camBtn('receiveScan(c)')}</div></div></div>
-    <div class="muted" style="font-size:12px;margin-top:8px">Receives the oldest open PO for that item into Houston.</div></div>
-  <div class="card"><h2>Purchase orders</h2>${db.purchase_orders.length? table(['PO #','Date','Supplier','Item',{n:'Qty'},{n:'Cost'},'Expected','Status',''],
-    db.purchase_orders.slice().reverse().map(p=>[p.id,p.date,sup(p.supplier).name,item(p.sku).name,{n:p.qty},{n:money(p.qty*p.unitCost)},p.expected,p.status,
-      {h:p.status==='Open'?`<button class="sm" onclick="receivePO('${p.id}')">Receive</button>`:''}])):'<span class="muted">None yet.</span>'}</div>`
-  + todo('Purchasing',['Load PO history so Apex scores well and Ironclad poorly','Partial receipts (fill rate)','Supplier scorecard: on-time %, fill rate']);
+    <div class="muted" style="font-size:12px;margin-top:8px">Receives the oldest sent PO for that item, full quantity, into Houston.</div></div>
+  <div class="card"><h2>Purchase orders</h2>${db.purchase_orders.length? `<div class="tbl-wrap">`+table(['PO #','Sent','Supplier','Item',{n:'Ordered'},{n:'Cost'},'Expected','Status','Received',''],
+    db.purchase_orders.slice().reverse().map(p=>[p.id,p.date,sup(p.supplier).name,item(p.sku).name,{n:p.qty},{n:money(p.qty*p.unitCost)},p.expected,
+      {h:statusPill(p.status==='Sent'?'Sent':p.status)+(p.status==='Sent'&&today()>p.expected?' <span class="pill bad">Overdue</span>':'')},
+      {h:p.received?`${p.qtyReceived??p.qty} on ${p.received} → ${esc(loc(p.loc||'HOU').name)}<br>${late(p)}`:''},
+      {h:p.status==='Sent'?`<div style="display:flex;gap:4px;align-items:center"><input id="rq_${p.id}" type="number" min="1" value="${p.qty}" style="width:70px"><select id="rl_${p.id}" style="width:auto">${opts(db.locations,'id',l=>l.id,'HOU')}</select><button class="sm" onclick="receivePO('${p.id}')">Receive</button></div>`
+        : p.status==='Received'?`<button class="ghost sm" onclick="closePO('${p.id}')">Close</button>`:''}]))+`</div>`:'<span class="muted">None yet.</span>'}</div>`;
 },
 
-suppliers(){ return `<h1>Suppliers</h1><div class="sub">${db.suppliers.length} suppliers</div>
-  <div class="card"><div class="tbl-wrap">${table(['Supplier','Supplies','Contact','Phone','Email',{n:'Quoted lead time'},'Terms'],
-    db.suppliers.map(s=>[s.name,s.supplies,s.contact||'',s.phone||'',s.email||'',{n:s.lead+' days'},s.terms]))}</div></div>`
-  + todo('Suppliers',['Scorecard: on-time rate, actual vs. quoted lead time, fill rate, amounts owed, overall rating']); },
+suppliers(){
+  const perf=supplierPerf();
+  const form=(x,id)=>`<tr><td colspan="8"><div class="row">${[['name','Supplier'],['supplies','Supplies'],['contact','Contact'],['phone','Phone'],['email','Email'],['lead','Quoted lead (days)'],['terms','Terms (e.g. Net 30)']].map(([k,l])=>
+      `<div style="min-width:110px"><label>${l}</label><input id="se_${k}" ${k==='lead'?'type="number" min="0"':''} value="${esc(x[k]??'')}"></div>`).join('')}
+    <div style="flex:0;white-space:nowrap"><button onclick="saveSupplier('${id}')">Save</button> <button class="ghost" onclick="supEdit=null;render()">Cancel</button></div></div></td></tr>`;
+  return `<h1>Suppliers</h1><div class="sub">${db.suppliers.length} suppliers. Click Edit to change contact info, lead time or payment terms.</div>
+  <div class="card"><div class="tbl-wrap"><table><tr><th>Supplier</th><th>Supplies</th><th>Contact</th><th>Phone</th><th>Email</th><th class="n">Quoted lead</th><th>Terms</th><th></th></tr>
+    ${db.suppliers.map(x=>supEdit===x.id? form(x,x.id) : `<tr><td>${esc(x.name)}</td><td>${esc(x.supplies||'')}</td><td>${esc(x.contact||'')}</td><td>${esc(x.phone||'')}</td><td>${esc(x.email||'')}</td><td class="n">${x.lead} days</td><td>${esc(x.terms)}</td>
+      <td><button class="ghost sm" onclick="supEdit='${x.id}';render()">Edit</button></td></tr>`).join('')}
+    ${supEdit==='new'? form({lead:7,terms:'Net 30'},'new') : ''}</table></div>
+    ${supEdit!=='new'?`<button class="ghost" style="margin-top:12px" onclick="supEdit='new';render()">+ Add supplier</button>`:''}</div>
+  <div class="card"><h2>Amounts owed</h2>${(()=>{const rows=perf.flatMap(p=>p.owed.map(o=>[p.s.name,o.id,{n:money(o.amt)},o.due,{h:o.due<today()?'<span class="pill bad">Past due</span>':'<span class="pill info">Open</span>'}]));
+      return rows.length? table(['Supplier','PO',{n:'Amount'},'Due date','Status'],rows) : '<span class="muted">Nothing owed. Amounts appear when POs are received; due date = receipt date + payment terms.</span>';})()}</div>`
+  + todo('Suppliers',['Scorecard screen: on-time rate, actual vs. quoted lead time, fill rate, amounts owed, overall rating (supplier performance is on the Reports page for now)']); },
 
 mrp(){
   const st=db.settings, rows=eoqRows(), basisNote=eoqBasisNote();
@@ -817,28 +884,36 @@ settings(){
 },
 
 financials(){
-  const t=totals();
+  const t=totals(), inv=invValue(), f=finishedAnnualDemandFactor(), annCogs=t.cogs*(f||0), turn=inv&&f? annCogs/inv : null;
+  const gm=t.rev? t.profit/t.rev : null;
   const byStore = db.locations.filter(l=>l.type==='Store').map(l=>{
     const st=totals(db.sales.filter(x=>x.store===l.id),(db.returns||[]).filter(r=>r.store===l.id));
     return [l.name,{n:db.sales.filter(x=>x.store===l.id).length},{n:money(st.gross)},{n:money(st.refunds)},{n:money(st.rev)},{n:money(st.tax)}]});
-  return `<h1>Financials</h1><div class="sub">Simple income view from recorded sales and returns.</div>
-  <div class="grid g4">${kpi('Net revenue',money(t.rev))}${kpi('COGS',money(t.cogs))}${kpi('Write-offs',money(t.writeOff))}${kpi('Gross profit',money(t.profit))}${kpi('Sales tax collected',money(t.tax))}</div>
-  <div class="card"><h2>Income summary</h2><table class="totals" style="max-width:420px">
-    <tr><td>Gross sales (after discounts)</td><td class="n">${money(t.gross)}</td></tr>
-    <tr><td>Returns</td><td class="n">−${money(t.refunds)}</td></tr>
-    <tr class="grand"><td>Net revenue</td><td class="n">${money(t.rev)}</td></tr>
-    <tr><td>Cost of goods sold</td><td class="n">−${money(t.cogs)}</td></tr>
-    <tr><td>Write-offs (damaged returns + production scrap)</td><td class="n">−${money(t.writeOff)}</td></tr>
-    <tr class="grand"><td>Gross profit</td><td class="n">${money(t.profit)}</td></tr></table></div>
-  <div class="card"><h2>By store</h2>${table(['Store',{n:'Sales'},{n:'Gross sales'},{n:'Returns'},{n:'Net revenue'},{n:'Tax collected'}],byStore)}</div>`
-  + todo('Financials',['Accounts payable from received POs','Inventory valuation by location','Period filter (month / quarter)']);
+  const line=(l,v,why,cls='')=>`<tr class="${cls}"><td>${l}<div class="muted" style="font-size:11px">${why}</div></td><td class="n">${v}</td></tr>`;
+  return `<h1>Financials</h1><div class="sub">Live from every sale, return, work order and adjustment in the system.</div>
+  <div class="grid g4">${kpi('Net revenue',money(t.rev))}${kpi('Gross profit',money(t.profit))}${kpi('Gross margin',gm==null?'—':pct(gm))}${kpi('Inventory value',money(inv))}${kpi('Inventory turnover',turn==null?'—':turn.toFixed(2)+'× / yr')}</div>
+  <div class="grid g2" style="align-items:start">
+  <div class="card"><h2>Profit & Loss</h2><table class="totals">
+    ${line('Sales (after discounts)',money(t.gross),'What customers paid for belts and collars, before tax')}
+    ${line('− Returns',money(t.refunds),'Refunds given back to customers')}
+    ${line('<b>Net revenue</b>',money(t.rev),'Sales minus returns','grand')}
+    ${line('− Cost of goods sold',money(t.cogs),'What the sold items cost us to make (parts from each bill of materials)')}
+    ${line('− Write-offs',money(t.writeOff),'Quality-failure returns and production scrap we can\'t resell')}
+    ${line('<b>Gross profit</b>',money(t.profit),'Net revenue minus cost of goods and write-offs','grand')}
+    ${line('Gross margin',gm==null?'—':pct(gm),'Gross profit ÷ net revenue')}
+    <tr><td class="muted" style="font-size:12px;padding-top:10px" colspan="2">Sales tax collected (${money(t.tax)}) is owed to the state, so it isn't revenue.</td></tr></table></div>
+  <div class="card"><h2>Inventory valuation</h2>${table(['Location',{n:'Value at cost'}],db.locations.map(l=>[l.name,{n:money(db.items.reduce((a,i)=>a+Math.max(0,onHand(i.sku,l.id))*unitCost(i.sku),0))}]).concat([[{h:'<b>Total</b>'},{n:money(inv)}]]))}
+    <div class="muted" style="font-size:12px;margin-top:8px">Valued at standard cost: purchase cost for parts, rolled-up BOM cost for finished goods.</div>
+    <h2 style="margin-top:16px">Inventory turnover</h2><div class="rec">${turn==null?'Needs sales history to calculate.':`Annualized COGS ${money(annCogs)} ÷ inventory value ${money(inv)} = <b>${turn.toFixed(2)}× per year</b> (about every ${Math.round(365/turn)} days).`}</div></div></div>
+  <div class="card"><h2>By store</h2>${table(['Store',{n:'Sales'},{n:'Gross sales'},{n:'Returns'},{n:'Net revenue'},{n:'Tax collected'}],byStore)}</div>`;
 },
 
 items(){ return `<h1>Items & BOMs</h1><div class="sub">${db.items.length} items: ${db.items.filter(i=>i.type==='Component').length} components, ${db.items.filter(i=>i.type==='Finished').length} finished. Costs and prices are sample numbers.</div>
-  <div class="card"><div class="tbl-wrap">${table(['SKU','Item','Type',{n:'Unit cost'},{n:'Price'},{n:'Reorder pt'},'BOM'],
+  <div class="card"><div class="tbl-wrap">${table(['SKU','Item','Type',{n:'Unit cost'},{n:'Price'},{n:'Reorder pt'},{n:'Lead time (days)'},'Bill of materials'],
     db.items.map(i=>[i.sku,i.name,i.type,{n:money(unitCost(i.sku))},{n:i.price?money(i.price):'—'},{n:i.reorder},
-      db.boms[i.sku]? db.boms[i.sku].map(p=>p.qty+'× '+p.sku).join(', '):'']))}</div></div>`
-  + todo('Items',['Edit cost, price and reorder point','Lead time per item']); },
+      {h:`<input type="number" min="0" style="width:70px;text-align:right" value="${leadDays(i)}" onchange="item('${i.sku}').lead=Math.max(0,Math.floor(+this.value||0));save();render()">`},
+      {h:db.boms[i.sku]? db.boms[i.sku].map(p=>`${p.qty} ${item(p.sku).unit} ${esc(item(p.sku).name)}`).join('<br>'):''}]))}</div>
+    <div class="muted" style="font-size:12px;margin-top:8px">Component lead time defaults to its supplier's quoted lead time; finished items default to 2 days to build. Lead times drive estimated available dates and order-by dates.</div></div>`; },
 
 labels(){
   const list=labelType==='Stations'? STATIONS.map(x=>({sku:'WC-'+x.id,name:x.id+' '+x.name+' (station sign)'}))
@@ -892,14 +967,15 @@ shop(){
   return `<h1>Custom Shop</h1><div class="sub">Choose a belt or collar, pick your colors, and preview the matching build.</div>
   <div class="customizer-grid"><div>
     <div class="custom-card">${shopPreview(picked)}</div>
-    <div class="custom-card"><h2>Build details</h2><div class="muted" style="font-size:12px">Components from the selected item’s bill of materials</div><ul class="bom-list">${parts.map(p=>`<li><span>${esc(item(p.sku).name)}</span><b>${p.qty} ${item(p.sku).unit==='yd'?'yd':'ea'}</b></li>`).join('')}</ul><div class="muted" style="font-size:11px;margin-top:8px">Item ${esc(picked.sku)} · ${qty>0?`${qty} available at ${esc(st.name.split(',')[0])}`:'Not currently in store stock'}</div></div>
+    <div class="custom-card"><h2>Build details</h2><div class="muted" style="font-size:12px">Components from the selected item’s bill of materials</div><ul class="bom-list">${parts.map(p=>`<li><span>${esc(item(p.sku).name)}</span><b>${p.qty} ${item(p.sku).unit==='yd'?'yd':'ea'}</b></li>`).join('')}</ul><div class="muted" style="font-size:11px;margin-top:8px">Item ${esc(picked.sku)}</div></div>
   </div><div>
     <div class="custom-card"><h2>Mix and match</h2>${kindOptions}${details}
       <div class="selection-summary"><div><strong>${esc(product.name)}</strong><div class="muted" style="font-size:12px;margin-top:4px">${esc(picked.detail)}</div></div><strong>${money(product.price)}</strong></div>
-      <div class="row" style="margin-top:14px"><div style="flex:0;max-width:100px"><label>Quantity</label><input id="customQty" type="number" min="1" value="1"></div><div><button style="width:100%" onclick="cartAdd('${picked.sku}',+$('#customQty').value)">Add to cart</button></div></div>
+      <div class="row" style="margin-top:14px"><div style="flex:0;max-width:100px"><label>Quantity</label><input id="customQty" type="number" min="1" value="1" oninput="updStock('${picked.sku}')"></div><div><button style="width:100%" id="addBtn" ${stockMsg(picked.sku,cart.store,1).ok?'':'disabled'} onclick="cartAdd('${picked.sku}',+$('#customQty').value)">Add to cart</button></div></div>
+      <div id="stockMsg">${stockMsg(picked.sku,cart.store,1).html}</div>
     </div>
     <div class="custom-card"><h2>Cart</h2><div style="max-width:320px;margin-bottom:12px"><label>Pick up at</label><select onchange="cart.store=this.value;render()">${opts(stores,'id',l=>l.name,cart.store)}</select></div>
-    ${cart.lines.length?`<table>${cart.lines.map((l,k)=>`<tr><td>${l.qty}× ${esc(item(l.sku).name)}</td><td class="n">${money(item(l.sku).price*l.qty)}</td><td><button class="ghost sm" onclick="cart.lines.splice(${k},1);render()">✕</button></td></tr>`).join('')}</table>
+    ${cart.lines.length?`<table>${cart.lines.map((l,k)=>`<tr><td>${l.qty}× ${esc(item(l.sku).name)}${cartLineNote(l)}</td><td class="n">${money(item(l.sku).price*l.qty)}</td><td><button class="ghost sm" onclick="cart.lines.splice(${k},1);render()">✕</button></td></tr>`).join('')}</table>
       <table class="totals" style="margin-top:10px"><tr><td>Subtotal</td><td class="n">${money(subtotal)}</td></tr><tr><td>Tax (${(st.tax*100).toFixed(3).replace(/\.?0+$/,'')}%)</td><td class="n">${money(tax)}</td></tr><tr class="grand"><td>Total</td><td class="n">${money(subtotal+tax)}</td></tr></table>
       <div class="muted" style="font-size:12px;margin:8px 0 12px">Pay at pickup in ${esc(st.name)}.</div><button style="width:100%" onclick="placeOrder()">Place order</button>`:'<span class="muted">Your cart is empty.</span>'}
     </div>
@@ -1014,13 +1090,17 @@ function adjust(){
 function createPO(){
   const sku=$('#poSku').value, q=Math.max(1,+$('#poQty').value||1), it=item(sku), s=sup(it.supplier);
   const exp=new Date(Date.now()+s.lead*864e5).toISOString().slice(0,10);
-  db.purchase_orders.push({id:nextId('PO-'),date:today(),supplier:s.id,sku,qty:q,unitCost:it.cost,expected:exp,status:'Open'}); poPrefill=null; save();
-  flash={text:`PO created with ${s.name}, expected ${exp}.`}; render();
+  db.purchase_orders.push({id:nextId('PO-'),date:today(),supplier:s.id,sku,qty:q,unitCost:it.cost,expected:exp,status:'Sent'}); poPrefill=null; save();
+  flash={text:`PO sent to ${s.name}, expected ${exp} (${s.lead}-day lead time).`}; render();
 }
 function receivePO(id){
-  const p=db.purchase_orders.find(x=>x.id===id); moveStock(p.sku,'HOU',p.qty); p.status='Received'; p.received=today(); save();
-  flash={text:`Received ${p.qty} × ${item(p.sku).name} into Houston.`}; render();
+  const p=db.purchase_orders.find(x=>x.id===id); if(p.status!=='Sent') return;
+  const q=$('#rq_'+id)? Math.max(0,Math.floor(+$('#rq_'+id).value||0)) : p.qty, l=$('#rl_'+id)? $('#rl_'+id).value : 'HOU';
+  if(q<1){ flash={bad:true,text:'Enter the quantity received.'}; return render(); }
+  moveStock(p.sku,l,q); p.status='Received'; p.received=today(); p.qtyReceived=q; p.loc=l; save();
+  flash={text:`Received ${q} of ${p.qty} × ${item(p.sku).name} into ${loc(l).name}${q<p.qty?` (short ${p.qty-q})`:''}.`}; render();
 }
+function closePO(id){ const p=db.purchase_orders.find(x=>x.id===id); if(p&&p.status==='Received'){ p.status='Closed'; save(); render(); } }
 
 /* =====================================================================
    SMART FACTORY ENGINE. Standards come from the team's Smart Factory
@@ -1036,6 +1116,7 @@ const DEFECTS=[['CUT_SHORT','Strap too short / wrong cut'],['WRONG_THREAD','Wron
 const FAMS=['leather','canvas','collar'], FAM_LABEL={leather:'Leather',canvas:'Canvas',collar:'Collar'}, FAM_COLOR={leather:'#5A351C',canvas:'#C18A4B',collar:'#6E7A4E'};
 const SF_BASE={demand:{leather:50,canvas:110,collar:40},shift:420,sewMachines:1,sewOperators:1,s3Setups:4,s3SetupMin:12,scrapPct:0,overtime:0};
 const LABOR_RATE=18; // $/hour, SIMULATED; overtime paid at 1.5x
+let woForm={sku:'FB-ML-BLK',qty:20,due:'',loc:'HOU'};
 let sfTab='floor', sfSource='sim', sfScen=JSON.parse(JSON.stringify(SF_BASE)), sf={station:'',wo:''}, rptFrom='', rptTo='';
 const sfBase=()=>JSON.parse(JSON.stringify(SF_BASE));
 const family=sku=>sku.startsWith('FD-')?'collar':sku.startsWith('FB-CV')?'canvas':'leather';
@@ -1234,9 +1315,9 @@ function methodology(){
 const opAvailable=o=>o.qtyIn-(o.good+o.rework+o.scrap);
 const woPill=s=>s;
 function createWO(){
-  const sku=$('#woSku').value, qty=Math.max(1,Math.floor(+$('#woQty').value||0)), due=$('#woDue').value||addDays(today(),7);
+  const sku=$('#woSku').value, qty=Math.max(1,Math.floor(+$('#woQty').value||0)), due=$('#woDue').value||addDays(today(),7), wloc=$('#woLoc').value||'HOU';
   const ops=STATIONS.filter(x=>ROUTING_STD[family(sku)][x.id]!=null).map(x=>({wc:x.id,std:ROUTING_STD[family(sku)][x.id],status:'Waiting',qtyIn:0,good:0,rework:0,reworkPassed:0,scrap:0,hold:0,start:null,end:null,runStart:null,minutes:0,lastReason:''}));
-  const w={id:nextId('WO-'),sku,qty,due,status:'Planned',created:today(),createdAt:nowISO(),released:null,completed:null,matCost:0,ops,events:[]};
+  const w={id:nextId('WO-'),sku,qty,due,loc:wloc,status:'Planned',created:today(),createdAt:nowISO(),released:null,completed:null,matCost:0,ops,events:[]};
   db.work_orders.push(w); save(); flash={text:`${w.id} created for ${qty} × ${item(sku).name}. Release it to issue parts.`}; render();
 }
 function releaseWO(id){
@@ -1284,7 +1365,7 @@ function endOp(){
 function passForward(w,o,n){
   if(!n) return; const i=w.ops.indexOf(o);
   if(i<w.ops.length-1) w.ops[i+1].qtyIn+=n;
-  else moveStock(w.sku,'HOU',n);  // only units that pass final QC become sellable stock
+  else moveStock(w.sku,w.loc||'HOU',n);  // only units that pass final QC become sellable stock, at the WO's location
 }
 function disposeHold(id,wc,how){
   const w=db.work_orders.find(x=>x.id===id), o=w.ops.find(x=>x.wc===wc); if(!o||o.hold<1) return;
@@ -1393,6 +1474,7 @@ function eoqRows(){
     return {i,D,lou,okc,S,H,eoq,rec,orders:rec?D/rec:null,cost:rec?(D/rec)*S+(rec/2)*H:null};
   });
 }
+const finishedAnnualDemandFactor=()=>{ if(!db.sales.length) return null; const first=db.sales.map(x=>x.date).sort()[0]; return 365/Math.max(30,(new Date(today())-new Date(first))/864e5+1); };
 const eoqRec=sku=>eoqRows().find(r=>r.i.sku===sku)?.rec||null;
 function eoqBasisNote(){
   const st=db.settings; if(st.demandBasis==='plan') return `D = the Smart Factory daily plan (50 leather, 110 canvas, 40 collars, split evenly across each family's items) × ${st.workDays} work days, exploded through each BOM. Simulated, not sales.`;
@@ -1487,14 +1569,48 @@ const openOrders=()=>(db.orders||[]).filter(o=>['Placed','Ready'].includes(o.sta
 const reserved=(sku,store)=>openOrders().filter(o=>o.store===store).reduce((a,o)=>a+o.lines.filter(l=>l.sku===sku).reduce((b,l)=>b+l.qty,0),0);
 const available=(sku,store)=>Math.max(0,onHand(sku,store)-reserved(sku,store));
 function shortages(o){ return o.lines.map(l=>({sku:l.sku,need:l.qty-onHand(l.sku,o.store)})).filter(x=>x.need>0); }
-function statusPill(st){ const c={Placed:'info',Ready:'warn','Picked up':'ok',Cancelled:'bad',Planned:'info',Released:'warn','In progress':'warn',Completed:'ok'}[st]||'info'; return `<span class="pill ${c}">${esc(st)}</span>`; }
+function statusPill(st){ const c={Placed:'info',Ready:'warn','Picked up':'ok',Fulfilled:'ok',Closed:'info',Sent:'warn',Received:'ok',Cancelled:'bad',Planned:'info',Released:'warn','In progress':'warn',Completed:'ok'}[st]||'info'; return `<span class="pill ${c}">${esc(st)}</span>`; }
+/* ---------- Customer-facing availability (Amazon-style) ----------
+   Uses the same live inventory as the ERP: store stock minus open pickup
+   orders, plus Houston finished goods that open orders haven't already
+   claimed, minus what's already in this cart. Exact counts are only shown
+   when stock is low. */
+const LOW_STOCK=10;
+const inCart=sku=>cart.lines.filter(l=>l.sku===sku).reduce((a,l)=>a+l.qty,0);
+function houstonFree(sku){
+  const claims=db.locations.filter(l=>l.type==='Store').reduce((a,l)=>a+Math.max(0,reserved(sku,l.id)-onHand(sku,l.id)),0);
+  return Math.max(0,onHand(sku,'HOU')-claims);
+}
+function custAvail(sku,store){ const c=inCart(sku), s=available(sku,store), h=houstonFree(sku);
+  const s2=Math.max(0,s-c), h2=Math.max(0,h-Math.max(0,c-s)); return {s:s2,h:h2,t:s2+h2}; }
+function stockMsg(sku,store,want){
+  const a=custAvail(sku,store), city=loc(store).name.split(',')[0];
+  const other=db.locations.filter(l=>l.type==='Store'&&l.id!==store).find(l=>available(sku,l.id)>0);
+  let cls,txt,ok=true;
+  if(a.t<=0){ cls='bad'; ok=false; txt=`<b>Out of stock</b><br>${other?`Try picking up at ${esc(other.name.split(',')[0])} instead.`:`Expected back around ${new Date(estAvail(sku)+'T12:00:00').toLocaleDateString([], {month:'short',day:'numeric'})}.`}`; }
+  else if(want>a.t){ cls='bad'; ok=false; txt=`<b>Only ${a.t} left</b><br>Lower the quantity to ${a.t} or fewer.`; }
+  else if(want<=a.s){ cls=a.s<=LOW_STOCK?'warn':'ok'; txt= a.s<=LOW_STOCK? `<b>Only ${a.s} left in ${esc(city)}</b> · order soon<br>Ready for pickup once we confirm your order.` : `<b>In stock in ${esc(city)}</b><br>Ready for pickup once we confirm your order.`; }
+  else { cls='warn'; txt= a.s>0? `<b>Only ${a.s} on the shelf in ${esc(city)}</b><br>We'll bring the other ${want-a.s} from our Houston warehouse, so pickup takes a little longer.`
+                                 : `<b>Not on the shelf in ${esc(city)}</b><br>We'll bring ${want===1?'it':'them'} from our Houston warehouse, so pickup takes a little longer.`; }
+  return {ok,html:`<div class="stockmsg ${cls}">${txt}</div>`};
+}
+function updStock(sku){ const q=Math.floor(+$('#customQty').value||0), m=stockMsg(sku,cart.store,Math.max(1,q)); $('#stockMsg').innerHTML=m.html; $('#addBtn').disabled=!m.ok||q<1; }
+function cartLineNote(l){ const s=Math.max(0,available(l.sku,cart.store)-cart.lines.filter(x=>x.sku===l.sku&&x!==l).reduce((a,x)=>a+x.qty,0));
+  return l.qty>s? `<div style="font-size:11px;color:var(--warn)">${s?`${s} from ${esc(loc(cart.store).name.split(',')[0])}, ${l.qty-s} from Houston`:'Coming from our Houston warehouse'}</div>`:''; }
 function cartAdd(sku,q){
   q=Math.floor(q||0); if(q<1){ flash={bad:true,text:'Enter a quantity of 1 or more.'}; return render(); }
+  const a=custAvail(sku,cart.store);
+  if(q>a.t){ flash={bad:true,text: a.t? `Only ${a.t} more of this item available. Lower the quantity.` : 'That item is out of stock right now.'}; return render(); }
   const l=cart.lines.find(x=>x.sku===sku); l? l.qty+=q : cart.lines.push({sku,qty:q});
   flash={text:`Added ${q}× ${item(sku).name}.`}; render();
 }
 function placeOrder(){
   const u=Auth.user(), st=loc(cart.store);
+  // re-check against live stock in case someone else bought it meanwhile
+  const saved=cart.lines; cart.lines=[];
+  const short=saved.map(l=>({l,t:custAvail(l.sku,cart.store).t})).filter(x=>x.l.qty>x.t);
+  cart.lines=saved;
+  if(short.length){ flash={bad:true,text:'Stock changed: '+short.map(x=>`${item(x.l.sku).name} now has only ${x.t} available`).join('; ')+'. Update your cart.'}; return render(); }
   const lines=cart.lines.map(l=>({sku:l.sku,qty:l.qty,price:item(l.sku).price}));
   const subtotal=round2(lines.reduce((a,l)=>a+l.price*l.qty,0)), tax=round2(subtotal*st.tax);
   const o={id:nextId('PU-'),date:today(),customer:u.customer,store:cart.store,lines,subtotal,taxRate:st.tax,tax,total:round2(subtotal+tax),status:'Placed',saleId:null};
@@ -1517,8 +1633,67 @@ function transferFor(id){
 function pickUp(id){
   const o=db.orders.find(x=>x.id===id);
   const sale=makeSale({store:o.store,customer:o.customer,lines:o.lines,source:'Pickup',orderId:o.id});
-  o.status='Picked up'; o.saleId=sale.id; save();
+  o.status='Fulfilled'; o.fulfilled=today(); o.saleId=sale.id; save();
   flash={text:`${o.id} picked up. Sale ${sale.id} recorded (${money(sale.total)}).`}; render();
+}
+
+/* ---------- Staff sales orders ---------- */
+let soDraft={customer:'C2',store:'LOU',lines:[]};
+function soAddLine(){ const sku=$('#soSku').value, q=Math.max(1,Math.floor(+$('#soQty').value||0)); const l=soDraft.lines.find(x=>x.sku===sku); l? l.qty+=q : soDraft.lines.push({sku,qty:q}); render(); }
+function soPlace(){
+  const d=soDraft, st=loc(d.store); if(!d.lines.length) return;
+  const short=d.lines.filter(l=>l.qty>available(l.sku,d.store)+houstonFree(l.sku));
+  if(short.length){ flash={bad:true,text:'Not enough stock in the store and Houston combined for: '+short.map(l=>item(l.sku).name).join(', ')}; return render(); }
+  const lines=d.lines.map(l=>({sku:l.sku,qty:l.qty,price:item(l.sku).price})), subtotal=round2(lines.reduce((a,l)=>a+l.price*l.qty,0)), tax=round2(subtotal*st.tax);
+  const o={id:nextId('PU-'),date:today(),customer:d.customer,store:d.store,lines,subtotal,taxRate:st.tax,tax,total:round2(subtotal+tax),status:'Placed',saleId:null,source:'Staff'};
+  db.orders.push(o); soDraft={...d,lines:[]}; save(); flash={text:`Sales order ${o.id} placed for ${db.customers.find(c=>c.id===o.customer).name}.`}; render();
+}
+
+/* ---------- Lead times, availability dates, transfers ---------- */
+const leadDays=i=> i.lead!=null? i.lead : i.type==='Component'? (sup(i.supplier)?.lead||7) : 2;
+function estAvail(sku){
+  const i=item(sku), po=db.purchase_orders.filter(p=>p.sku===sku&&p.status==='Sent').map(p=>p.expected).sort()[0];
+  const wo=db.work_orders.filter(w=>w.sku===sku&&['Planned','Released','In progress'].includes(w.status)).map(w=>w.due).sort()[0];
+  return po||wo||addDays(today(),leadDays(i));
+}
+let trForm={sku:'FB-ML-BLK',from:'HOU',to:'LOU',qty:5};
+function transferStock(){
+  trForm={sku:$('#trSku').value,from:$('#trFrom').value,to:$('#trTo').value,qty:$('#trQty').value};
+  const sku=$('#trSku').value, from=$('#trFrom').value, to=$('#trTo').value, q=Math.floor(+$('#trQty').value||0);
+  if(from===to){ flash={bad:true,text:'Pick two different locations.'}; return render(); }
+  if(q<1){ flash={bad:true,text:'Enter a quantity of 1 or more.'}; return render(); }
+  if(onHand(sku,from)<q){ flash={bad:true,text:`${loc(from).name} only has ${onHand(sku,from)} of ${sku}.`}; return render(); }
+  moveStock(sku,from,-q); moveStock(sku,to,q); db.transfers.push({id:nextId('T-'),date:today(),sku,from,to,qty:q}); save();
+  flash={text:`Moved ${q} × ${item(sku).name} from ${loc(from).name} to ${loc(to).name}.`}; render();
+}
+
+/* ---------- Suppliers: add / edit ---------- */
+let supEdit=null;
+function saveSupplier(id){
+  const v=k=>$('#se_'+k).value.trim(), lead=Math.max(0,Math.floor(+v('lead')||0));
+  if(!v('name')){ flash={bad:true,text:'Supplier name is required.'}; return render(); }
+  const data={name:v('name'),supplies:v('supplies'),contact:v('contact'),phone:v('phone'),email:v('email'),lead,terms:v('terms')||'Net 30'};
+  if(id==='new'){ db.suppliers.push({id:nextId('S'),...data}); } else Object.assign(sup(id),data);
+  supEdit=null; save(); flash={text:`Saved ${data.name}.`}; render();
+}
+const termDays=t=>+(String(t).match(/\d+/)||[30])[0];
+function supplierPerf(){
+  return db.suppliers.map(s=>{
+    const rec=db.purchase_orders.filter(p=>p.supplier===s.id&&p.received);
+    const lt=rec.map(p=>(new Date(p.received)-new Date(p.date))/864e5);
+    const owed=db.purchase_orders.filter(p=>p.supplier===s.id&&p.received&&!p.paid).map(p=>({amt:(p.qtyReceived??p.qty)*p.unitCost,due:addDays(p.received,termDays(s.terms)),id:p.id}));
+    return {s,n:rec.length,avgLead:lt.length?lt.reduce((a,b)=>a+b,0)/lt.length:null,
+      ontime:rec.length?rec.filter(p=>p.received<=p.expected).length/rec.length:null,
+      fill:rec.length?rec.reduce((a,p)=>a+(p.qtyReceived??p.qty),0)/rec.reduce((a,p)=>a+p.qty,0):null, owed};
+  });
+}
+function lowStockRows(){
+  const eo=eoqRows(), out=[];
+  db.items.forEach(i=>{ const oh=totalOnHand(i.sku); if(oh>=i.reorder) return;
+    const e=eo.find(r=>r.i.sku===i.sku), daily=e&&e.D? e.D/365 : 0, lead=leadDays(i);
+    const runOut= daily? addDays(today(),Math.floor(Math.max(0,oh)/daily)) : today();
+    out.push({i,where:i.type==='Component'?'All (Houston buys)':'All locations',oh,qty:Math.max(i.reorder-oh,e?.rec||0),lead,orderBy:addDays(runOut,-lead)<today()?today():addDays(runOut,-lead),eta:estAvail(i.sku)}); });
+  return out;
 }
 
 /* ---------- Returns actions ---------- */
@@ -1531,10 +1706,12 @@ function loadReturn(v){
 }
 function processReturn(){
   const x=db.sales.find(v=>v.id===retSale), ratio=x.subtotal? x.discount/x.subtotal : 0;
-  const lines=x.lines.map((l,i)=>{const rc=reasonCode($('#rc'+i).value);return {sku:l.sku,qty:Math.floor(+$('#rq'+i).value||0),reason:rc?.code||'',restock:!!rc?.restock,qf:!!rc?.qf,
+  const lines=x.lines.map((l,i)=>{const rc=reasonCode($('#rc'+i).value);return {sku:l.sku,qty:Math.floor(+$('#rq'+i).value||0),reason:rc?.code||'',restock:!!rc?.restock,qf:!!rc?.qf,exch:$('#rx'+i).value,
     unit:l.price*(1-ratio),left:l.qty-returnedQty(x.id,l.sku)};}).filter(l=>l.qty>0);
   if(!lines.length){ flash={bad:true,text:'Enter a return quantity on at least one line.'}; return render(); }
   if(lines.some(l=>!l.reason)){ flash={bad:true,text:'Pick a reason code for every line you return.'}; return render(); }
+  const exShort=lines.filter(l=>l.exch&&onHand(l.exch,x.store)+(l.restock&&l.exch===l.sku?l.qty:0)<l.qty);
+  if(exShort.length){ flash={bad:true,text:`Not enough ${exShort.map(l=>item(l.exch).name).join(', ')} at ${loc(x.store).name} for the exchange.`}; return render(); }
   const over=lines.find(l=>l.qty>l.left);
   if(over){ flash={bad:true,text:`Only ${over.left} of ${item(over.sku).name} can still be returned.`}; return render(); }
   const refundSub=round2(lines.reduce((a,l)=>a+l.unit*l.qty,0)), tax=round2(refundSub*x.taxRate);
@@ -1544,11 +1721,20 @@ function processReturn(){
   lines.forEach(l=>{ if(l.restock) moveStock(l.sku,x.store,l.qty);
     else db.adjustments.push({id:nextId('A-'),date:today(),sku:l.sku,loc:x.store,qty:0,reason:l.reason,ref:id}); });
   db.returns.push({id,date:today(),saleId:x.id,store:x.store,customer:x.customer,
-    lines:lines.map(({sku,qty,restock,reason,qf})=>({sku,qty,restock,reason,qf})),refundSub,tax,total:round2(refundSub+tax),cogs,writeOff});
-  save(); retSale=null; flash={text:`Return ${id} done. Refund ${money(refundSub+tax)} (incl. ${money(tax)} tax).`}; render();
+    lines:lines.map(({sku,qty,restock,reason,qf,exch})=>({sku,qty,restock,reason,qf,exch:exch||null})),refundSub,tax,total:round2(refundSub+tax),cogs,writeOff});
+  // exchanges: the replacement is a new sale at the same store, netted against the refund
+  const ex=lines.filter(l=>l.exch);
+  let exText='';
+  if(ex.length){
+    const sale=makeSale({store:x.store,customer:x.customer,lines:ex.map(l=>({sku:l.exch,qty:l.qty,price:item(l.exch).price})),source:'Exchange',orderId:id});
+    db.returns.at(-1).exchangeSale=sale.id; save();
+    const refEx=round2(ex.reduce((a,l)=>a+l.unit*l.qty,0)*(1+x.taxRate)), net=round2(sale.total-refEx);
+    exText=` Exchange sale ${sale.id}: ${ex.map(l=>`${l.qty}× ${item(l.exch).name}`).join(', ')}. ${net>0?`Customer pays ${money(net)} more.`:net<0?`Customer gets ${money(-net)} back.`:'Even swap.'}`;
+  }
+  save(); retSale=null; flash={text:`Return ${id} done. Refund ${money(refundSub+tax)} (incl. ${money(tax)} tax).${exText}`}; render();
 }
 function receiveScan(v){
-  v=(v||'').trim().toUpperCase(); const p=db.purchase_orders.find(x=>x.status==='Open'&&x.sku===v);
+  v=(v||'').trim().toUpperCase(); const p=db.purchase_orders.find(x=>x.status==='Sent'&&x.sku===v);
   if(!p){ flash={bad:true,text:'No open purchase order for "'+v+'".'}; return render(); }
   receivePO(p.id);
 }
@@ -1590,6 +1776,8 @@ window.addEventListener('hashchange',()=>{lastReceipt=null;viewReceipt=null;rend
   if(!db.users){ await initUsers(); save(); }
   db.returns ||= []; db.orders ||= []; db.transfers ||= []; db.work_orders ||= [];
   db.reason_codes ||= defaultReasonCodes(); db.settings ||= defaultSettings();
+  db.orders.forEach(o=>{ if(o.status==='Picked up') o.status='Fulfilled'; });
+  db.purchase_orders.forEach(p=>{ if(p.status==='Open') p.status='Sent'; if(p.status==='Received'&&p.qtyReceived==null) p.qtyReceived=p.qty; });
   try{ const e=sessionStorage.getItem(SESSION_KEY); if(e && db.users.some(u=>u.email===e)) session={email:e}; }catch(e){}
   await wait(700); render(); hideLoader();
 })();
