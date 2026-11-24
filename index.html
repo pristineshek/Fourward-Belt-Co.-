@@ -328,10 +328,10 @@ function seed(){
 }
 
 /* Load saved state (this browser only) or start fresh */
-const KEY='fourward-erp-v2';
+const KEY='fourward-erp-v4';
 let db; try{ db = JSON.parse(localStorage.getItem(KEY)) || seed(); }catch(e){ db = seed(); }
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(db)); }catch(e){} }
-async function resetData(){ db = seed(); await initUsers(); save(); Auth.signOut(); }
+async function resetData(){ showLoader('Rebuilding demo data…'); db = seed(); await initUsers(); addHistory(); save(); hideLoader(); Auth.signOut(); }
 
 /* ---------- AUTH ----------
    Passwords are salted + hashed (SHA-256), never stored as plain text.
@@ -605,8 +605,17 @@ reports(){
     <div class="muted" style="font-size:12px;margin-top:8px">From received purchase orders. Suppliers with no received POs show "—".</div></div>`;
 },
 
-sales(){ return `<h1>Sales History</h1><div class="sub">All completed sales.</div><div class="card">${salesTable(db.sales.slice().reverse())}</div>`
-  + todo('Sales history',['Import the team\'s 6+ months of sales (Christmas and Father\'s Day spikes, slow January)','Filter by store, customer and date']); },
+sales(){
+  const f=shFilter, list=db.sales.filter(x=>(f.store==='all'||x.store===f.store)&&(f.cust==='all'||x.customer===f.cust)&&(!f.from||x.date>=f.from)&&(!f.to||x.date<=f.to)).slice().reverse();
+  const tot=list.reduce((a,x)=>a+x.subtotal-x.discount,0), units=list.reduce((a,x)=>a+x.lines.reduce((b,l)=>b+l.qty,0),0);
+  return `<h1>Sales History</h1><div class="sub">${fmtN(db.sales.length)} sales from ${db.sales[0]?.date||'—'} to ${db.sales.at(-1)?.date||'—'}. History before today is generated demo data<span class="sim">GENERATED</span></div>
+  <div class="card"><div class="row">
+    <div><label>Store</label><select onchange="shFilter.store=this.value;render()"><option value="all">All stores</option>${opts(db.locations.filter(l=>l.type==='Store'),'id',l=>l.name,f.store)}</select></div>
+    <div><label>Customer</label><select onchange="shFilter.cust=this.value;render()"><option value="all">All customers</option>${opts(db.customers,'id',c=>c.name,f.cust)}</select></div>
+    <div><label>From</label><input type="date" value="${f.from}" onchange="shFilter.from=this.value;render()"></div>
+    <div><label>To</label><input type="date" value="${f.to}" onchange="shFilter.to=this.value;render()"></div></div></div>
+  <div class="grid g4">${kpi('Sales',fmtN(list.length))}${kpi('Units',fmtN(units))}${kpi('Net sales (pre-tax)',money(tot))}</div>
+  <div class="card">${salesTable(list.slice(0,200))}${list.length>200?`<div class="muted" style="font-size:12px;margin-top:8px">Showing the latest 200 of ${fmtN(list.length)}. Narrow the filters to see more.</div>`:''}</div>`; },
 
 returns(){
   const x=db.sales.find(v=>v.id===retSale);
@@ -839,11 +848,14 @@ mrp(){
     <div style="flex:0;white-space:nowrap"><button class="ghost" onclick="location.hash='settings'">Supplier & item overrides</button></div></div>
     <div class="muted" style="font-size:12px;margin-top:10px">${basisNote} Default S = $42, APQC's average cost to process a purchase order. Holding rate 25% is a team assumption within the commonly cited 20–30% carrying-cost range.</div></div>
   <div class="card"><h2>EOQ for all ${rows.length} purchased components</h2><div class="tbl-wrap">${table(
-    ['SKU','Component','Supplier',{n:'Annual demand (D)'},{n:'Louisville'},{n:'Oklahoma City'},{n:'S / order'},{n:'H / unit / yr'},{n:'EOQ'},{n:'Order qty'},{n:'Orders / yr'},{n:'Annual cost'},''],
+    ['SKU','Component','Supplier',{n:'Annual demand (D)'},{n:'Louisville'},{n:'Oklahoma City'},{n:'S / order'},{n:'H / unit / yr'},{n:'EOQ'},{n:'Order qty'},{n:'Orders / yr'},{n:'Annual cost'},{n:'Reorder pt (suggested)'},''],
     rows.map(r=>[r.i.sku,r.i.name,sup(r.i.supplier).name,{n:r.D?fmtN(r.D)+' '+r.i.unit:'—'},{n:r.lou==null?'—':fmtN(r.lou)},{n:r.okc==null?'—':fmtN(r.okc)},
       {n:money(r.S)},{n:r.H?'$'+r.H.toFixed(r.H<1?4:2):'—'},{n:r.eoq==null?'—':fmtN(r.eoq,1)},{n:r.rec==null?'—':fmtN(r.rec)},{n:r.orders==null?'—':r.orders.toFixed(1)},{n:r.cost==null?'—':money(r.cost)},
+      {h:r.rop==null?'—':`<span title="${fmtN(r.D/365,1)}/day × ${r.lead}-day lead × ${1+SAFETY}">${fmtN(r.rop)}</span>${r.rop!==r.i.reorder?` <span class="muted" style="font-size:11px">(now ${r.i.reorder})</span>`:''}`},
       {h:r.rec?`<button class="ghost sm" onclick="poPrefill={sku:'${r.i.sku}',qty:${r.rec}};location.hash='purchasing'">Order</button>`:''}]))}</div>
-    <div class="muted" style="font-size:12px;margin-top:8px">EOQ = √(2 × D × S ÷ H), with H = unit cost × holding rate. Order qty rounds EOQ up to the pack size and minimum order. Annual cost = (D ÷ order qty) × S + (order qty ÷ 2) × H. Total for all components: <b>${money(tot)}</b>/yr. Rows with no demand show "—".</div></div>
+    <div class="muted" style="font-size:12px;margin-top:8px">EOQ = √(2 × D × S ÷ H), with H = unit cost × holding rate. Order qty rounds EOQ up to the pack size and minimum order. Annual cost = (D ÷ order qty) × S + (order qty ÷ 2) × H. Total for all components: <b>${money(tot)}</b>/yr. Rows with no demand show "—".
+      Suggested reorder point = average daily usage × lead time × ${1+SAFETY} (lead-time demand plus ${SAFETY*100}% safety stock).</div>
+    <div style="margin-top:10px"><button class="ghost" onclick="applyROP()">Apply suggested reorder points</button></div></div>
   <div class="card"><h2>Below reorder point</h2>${reorder.length? table(['SKU','Component','Supplier',{n:'On hand'},{n:'Reorder pt'},{n:'Short'},{n:'EOQ order qty'},''],
     reorder.map(r=>{const e=rows.find(x=>x.i.sku===r.i.sku);const q=Math.max(r.need,e?.rec||0);return [r.i.sku,r.i.name,sup(r.i.supplier).name,{n:r.oh},{n:r.i.reorder},{n:r.need},{n:e?.rec??'—'},
       {h:`<button class="sm" onclick="poPrefill={sku:'${r.i.sku}',qty:${q}};location.hash='purchasing'">Order ${q}</button>`}];})):'<span class="muted">No components are below their reorder point.</span>'}</div>`
@@ -1398,6 +1410,108 @@ function woReportRows(){
   });
 }
 
+/* =====================================================================
+   DEMO HISTORY GENERATOR. 12 months ending yesterday: sales, returns,
+   purchase orders, adjustments and completed work orders. Uses a fixed
+   random seed so every device builds the same pattern. History records
+   don't move today's stock: current inventory is the starting snapshot.
+   ===================================================================== */
+let shFilter={store:'all',cust:'all',from:'',to:''};
+function addHistory(){
+  let a=20261124>>>0; const rnd=()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};
+  const ri=(lo,hi)=>lo+Math.floor(rnd()*(hi-lo+1));
+  const pick=w=>{const tot=w.reduce((x,y)=>x+y[1],0);let r=rnd()*tot;for(const [k,v] of w){if((r-=v)<0)return k;}return w[0][0];};
+  const pois=l=>{let L=Math.exp(-l),k=0,p=1;do{k++;p*=rnd();}while(p>L);return k-1;};
+  // History runs through Dec 1, 2026 (the day before the Dec 2 demo), or through yesterday if that's later.
+  const HIST_END='2026-12-01', yest=addDays(today(),-1), end=yest>HIST_END?yest:HIST_END, start=addDays(end,-364);
+  const sales=[], rets=[], pos=[], adj=[], wos=[];
+  const fdOf=y=>{const d=new Date(y,5,1);const first=(7-d.getDay())%7;return `${y}-06-${String(1+first+14).padStart(2,'0')}`;}; // third Sunday of June
+  const tgOf=y=>{const d=new Date(y,10,1);const first=(4-d.getDay()+7)%7;return `${y}-11-${String(1+first+21).padStart(2,'0')}`;}; // 4th Thursday of November
+  const MONTH={1:.55,2:.75,3:.9,4:1,5:1.05,6:1.15,7:1,8:1.1,9:.95,10:1,11:1.2,12:1.45}, WEEK=[.8,.8,.8,.9,1,1.2,1.5]; // Sun..Sat
+  const MIX=[['FB-ML-BLK',18],['FB-WL-BLK',12],['FB-ML-BRN',6],['FB-WL-BRN',4],['FB-CV-BLK-S',9],['FB-CV-BLK-B',8],['FB-CV-BRN-S',6],['FB-CV-BRN-B',5],
+    ['FB-CV-WHT-S',3],['FB-CV-WHT-B',2],['FB-CV-TAN-S',4],['FB-CV-TAN-B',3],['FB-CV-GRY-S',3],['FB-CV-GRY-B',3],['FB-CV-NVY-S',1],['FB-CV-NVY-B',1],['FD-COL-BLK',5],['FD-COL-BRN',4]];
+  const BASE={LOU:6,OKC:5};
+  const mkSale=(date,store,customer,lines,disc,source)=>{
+    const tr=loc(store).tax, sub=round2(lines.reduce((x,l)=>x+l.price*l.qty,0)), d=round2(sub*disc/100), tax=round2((sub-d)*tr);
+    const sale={id:nextId('R-'),date,store,customer,lines,subtotal:sub,discType:'pct',discVal:disc,discount:d,taxRate:tr,tax,total:round2(sub-d+tax),cogs:round2(lines.reduce((x,l)=>x+unitCost(l.sku)*l.qty,0)),source};
+    sales.push(sale); return sale;
+  };
+  const line=(sku,q)=>({sku,qty:q,price:item(sku).price});
+  // account schedules
+  const accounts=[{id:'C9',store:'OKC',next:20,gap:[55,65]},{id:'C10',store:'LOU',next:8,gap:[28,33]},{id:'C11',store:'OKC',next:15,gap:[35,55]}];
+  const indiv=['C2','C3','C4','C5','C6','C7','C8'].map((id,k)=>({id,next:ri(5,90),gap:[60,120]}));
+  const TYP={C2:['FB-ML-BLK'],C3:['FB-ML-BRN'],C4:['FB-WL-BLK'],C5:['FB-CV-BLK-S','FB-CV-BLK-B'],C6:['FD-COL-BLK','FD-COL-BRN'],C7:['FB-ML-BLK'],C8:['FB-CV-NVY-S']};
+  let schoolDone={};
+  for(let k=0;k<365;k++){
+    const date=addDays(start,k), dt=new Date(date+'T12:00:00'), m=dt.getMonth()+1, y=dt.getFullYear(), md=date.slice(5);
+    let f=MONTH[m]*WEEK[dt.getDay()];
+    const fd=fdOf(y), dfd=(new Date(fd+'T12:00:00')-dt)/864e5;
+    if(dfd>=0&&dfd<=10) f*=2.2;                       // Father's Day rush
+    if(md>='12-10'&&md<='12-24') f*=1.8;              // Christmas rush
+    const tg=tgOf(y), dtg=Math.round((dt-new Date(tg+'T12:00:00'))/864e5);
+    let promo=0;                                      // % of shoppers using the holiday promo (20% off)
+    if(dtg===0) f=0;                                  // Thanksgiving: closed
+    if(dtg===1){ f*=3.0; promo=.6; }                  // Black Friday
+    if(dtg===2||dtg===3){ f*=1.8; promo=.35; }        // Black Friday weekend
+    if(dtg===4){ f*=1.3; promo=.2; }                  // Cyber Monday
+    if(md==='12-25'||md==='01-01') f=0;               // closed
+    ['LOU','OKC'].forEach(store=>{
+      const n=pois(BASE[store]*f/1.35);
+      for(let t=0;t<n;t++){ const items=pick([[1,70],[2,24],[3,6]]), ls=[];
+        for(let j=0;j<items;j++){ const sku=pick(MIX), ex=ls.find(l=>l.sku===sku); ex? ex.qty++ : ls.push(line(sku,1)); }
+        mkSale(date,store,'C1',ls,rnd()<promo?20:(rnd()<.06?10:0),'POS'); }
+    });
+    accounts.forEach(ac=>{ if(k<ac.next) return; ac.next=k+ri(...ac.gap); let ls=[];
+      if(ac.id==='C9'){ const q=ri(20,30), b=Math.round(q*.6); ls=[line('FB-ML-BLK',b),line('FB-ML-BRN',q-b)]; }
+      if(ac.id==='C10'){ const q=ri(10,15); const pool=[['FB-CV-BLK-S',4],['FB-CV-BLK-B',3],['FB-CV-BRN-S',3],['FB-CV-BRN-B',2],['FB-CV-TAN-S',1],['FB-CV-GRY-S',1],['FB-CV-WHT-S',.5]];
+        for(let j=0;j<q;j++){ const sku=pick(pool), ex=ls.find(l=>l.sku===sku); ex? ex.qty++ : ls.push(line(sku,1)); } }
+      if(ac.id==='C11'){ const q=ri(15,25), b=Math.round(q*(.45+rnd()*.1)); ls=[line('FD-COL-BLK',b),line('FD-COL-BRN',q-b)]; }
+      mkSale(date,ac.store,ac.id,ls,10,'Account'); });
+    if(m===8&&!schoolDone[y]&&dt.getDate()>=5){ schoolDone[y]=1; const q=ri(40,50), b=Math.round(q*.6); mkSale(date,'OKC','C9',[line('FB-ML-BLK',b),line('FB-ML-BRN',q-b)],10,'Account'); } // school-year order
+    indiv.forEach(c=>{ if(k<c.next) return; c.next=k+ri(...c.gap); const cust=db.customers.find(x=>x.id===c.id);
+      mkSale(date,cust.pickup||'LOU',c.id,[line(TYP[c.id][ri(0,TYP[c.id].length-1)],1)],0,'POS'); });
+  }
+  // returns: ~3% of walk-in / individual lines, reason codes in realistic shares
+  const RW=[['RET-SIZE',55],['RET-MIND',25],['RET-QF-BKL',12],['RET-QF-STR',8]];
+  sales.filter(x=>x.source==='POS').forEach(x=>x.lines.forEach(l=>{ if(rnd()>=.03) return; const rd=addDays(x.date,ri(2,20)); if(rd>end) return;
+    const rc=reasonCode(pick(RW)), q=1, ratio=x.subtotal?x.discount/x.subtotal:0, unit=l.price*(1-ratio), refundSub=round2(unit*q), tax=round2(refundSub*x.taxRate), cogs=round2(unitCost(l.sku)*q);
+    rets.push({id:nextId('RT-'),date:rd,saleId:x.id,store:x.store,customer:x.customer,lines:[{sku:l.sku,qty:q,restock:rc.restock,reason:rc.code,qf:rc.qf,exch:null}],refundSub,tax,total:round2(refundSub+tax),cogs,writeOff:rc.qf?cogs:0}); }));
+  rets.sort((p,q)=>p.date<q.date?-1:1);
+  // purchase orders from component usage; supplier behaviour per master notes
+  const PROF={S1:{on:.9,max:3,fill:[.98,1]},S2:{on:.88,max:3,fill:[.97,1]},S3:{on:.97,max:2,fill:[1,1]},S4:{on:.4,max:14,fill:[.85,.95]},S5:{on:.92,max:2,fill:[.97,1]},S6:{on:.85,max:4,fill:[.96,1]}};
+  const use={}; sales.forEach(x=>x.lines.forEach(l=>(db.boms[l.sku]||[]).forEach(p=>use[p.sku]=(use[p.sku]||0)+p.qty*l.qty)));
+  db.items.filter(i=>i.type==='Component').forEach(i=>{ const s=sup(i.supplier), pr=PROF[s.id], daily=(use[i.sku]||0)/365, gap=ri(35,50);
+    for(let d=ri(0,20); d<365; d+=gap+ri(-5,5)){ const date=addDays(start,d), raw=Math.max(i.unit==='yd'?100:10,daily*gap*1.1), qty=i.unit==='yd'?Math.ceil(raw/100)*100:Math.ceil(raw/5)*5;
+      const expected=addDays(date,s.lead), received=addDays(expected,rnd()<pr.on? ri(-2,0) : ri(1,pr.max));
+      const p={id:nextId('PO-'),date,supplier:s.id,sku:i.sku,qty,unitCost:i.cost,expected,status:'Sent'};
+      if(received<=end){ const fr=pr.fill[0]+rnd()*(pr.fill[1]-pr.fill[0]); p.received=received; p.qtyReceived=Math.min(qty,Math.round(qty*fr)); p.loc='HOU';
+        p.status=received<addDays(end,-30)?'Closed':'Received'; p.paid=addDays(received,termDays(s.terms))<end && !(s.id==='S4'&&received>addDays(end,-75)); }
+      pos.push(p); } });
+  pos.sort((p,q)=>p.date<q.date?-1:1);
+  // inventory adjustments: mostly cycle counts, a few damaged, rarely lost
+  const AW=[['ADJ-CC',70],['ADJ-DMG',22],['ADJ-LOST',8]];
+  for(let d=ri(2,8); d<365; d+=ri(6,12)){ const code=pick(AW), it=db.items[ri(0,db.items.length-1)], l=it.type==='Component'?'HOU':pick([['HOU',1],['LOU',1],['OKC',1]]);
+    const q=code==='ADJ-CC'? (rnd()<.5?-1:1)*ri(1,3)*(it.unit==='yd'?10:1) : -ri(1,2)*(it.unit==='yd'?5:1);
+    adj.push({id:nextId('A-'),date:addDays(start,d),sku:it.sku,loc:l,qty:q,reason:code}); }
+  // completed work orders: ~3 per week, sized to sales, with rework/scrap by station
+  const WHY={S1:'PRD-CUT',S2:'PRD-CUT',S3:'PRD-STITCH',S4:'PRD-BKL',S5:'PRD-BKL',S6:'PRD-SCR'};
+  for(let wk=0; wk<52; wk++) for(let j=0;j<3;j++){
+    const sku=pick(MIX), qty=ri(4,8)*5, created=addDays(start,wk*7+ri(0,2)), fam=family(sku), dur=ri(2,6), done=addDays(created,dur);
+    if(done>end) continue;
+    let inQ=qty; const ev=[], ops=STATIONS.filter(x=>ROUTING_STD[fam][x.id]!=null).map((x,oi)=>{
+      let scr=0,rew=0; for(let u=0;u<inQ;u++){ const r=rnd(); if(r<.003) scr++; else if(r<.012) rew++; }
+      const good=inQ-scr-rew, nOps=ROUTING_STD[fam].S4==null?5:6, t0=new Date(addDays(created,Math.floor(oi*dur/nOps))+'T15:00:00Z'); t0.setUTCHours(15+(oi%3)*2); const t1=new Date(t0.getTime()+(ROUTING_STD[fam][x.id]*inQ*(.9+rnd()*.3))*60000);
+      const why=(scr||rew)? (x.id==='S6'? pick([['PRD-SCR',2],['PRD-STITCH',1],['PRD-BKL',1]]) : WHY[x.id]) : '';
+      ev.push({t:t1.toISOString(),e:'end',wc:x.id,proc:inQ,good,rew,scr,why});
+      const op={wc:x.id,std:ROUTING_STD[fam][x.id],status:'Done',qtyIn:inQ,good,rework:rew,reworkPassed:rew,scrap:scr,hold:0,start:t0.toISOString(),end:t1.toISOString(),runStart:null,minutes:(t1-t0)/60000,lastReason:why};
+      inQ=good+rew; return op; });
+    wos.push({id:nextId('WO-'),sku,qty,due:addDays(created,rnd()<.92?7:2),loc:'HOU',status:'Completed',created,createdAt:created+'T14:00:00Z',released:created+'T14:30:00Z',
+      completed:ops.at(-1).end,matCost:round2(unitCost(sku)*qty),ops,events:ev,history:true}); }
+  wos.sort((p,q)=>p.created<q.created?-1:1);
+  db.sales=sales.concat(db.sales); db.returns=rets.concat(db.returns||[]); db.purchase_orders=pos.concat(db.purchase_orders);
+  db.adjustments=adj.concat(db.adjustments); db.work_orders=wos.concat(db.work_orders||[]); db.history_v=1;
+}
+
 /* ---------- Reason codes ---------- */
 function defaultReasonCodes(){
   const r=(code,category,desc,qf,restock,sort)=>({code,category,desc,qf,restock,sort,active:true});
@@ -1471,10 +1585,13 @@ function eoqRows(){
     const eoq=D>0&&S>0&&H>0? Math.sqrt(2*D*S/H) : null;
     const pack=Math.max(1,st.pack[i.sku]||1), moq=Math.max(1,st.moq[i.sku]||1);
     const rec=eoq==null? null : Math.max(moq,Math.ceil(eoq/pack)*pack);
-    return {i,D,lou,okc,S,H,eoq,rec,orders:rec?D/rec:null,cost:rec?(D/rec)*S+(rec/2)*H:null};
+    const lead=leadDays(i), rop=D>0? Math.ceil(D/365*lead*(1+SAFETY)) : null;
+    return {i,D,lou,okc,S,H,eoq,rec,orders:rec?D/rec:null,cost:rec?(D/rec)*S+(rec/2)*H:null,lead,rop};
   });
 }
 const finishedAnnualDemandFactor=()=>{ if(!db.sales.length) return null; const first=db.sales.map(x=>x.date).sort()[0]; return 365/Math.max(30,(new Date(today())-new Date(first))/864e5+1); };
+const SAFETY=0.5;
+function applyROP(){ let n=0; eoqRows().forEach(r=>{ if(r.rop!=null&&r.i.reorder!==r.rop){ r.i.reorder=r.rop; n++; } }); save(); flash={text:`Updated ${n} reorder points from lead-time demand.`}; render(); }
 const eoqRec=sku=>eoqRows().find(r=>r.i.sku===sku)?.rec||null;
 function eoqBasisNote(){
   const st=db.settings; if(st.demandBasis==='plan') return `D = the Smart Factory daily plan (50 leather, 110 canvas, 40 collars, split evenly across each family's items) × ${st.workDays} work days, exploded through each BOM. Simulated, not sales.`;
@@ -1778,6 +1895,7 @@ window.addEventListener('hashchange',()=>{lastReceipt=null;viewReceipt=null;rend
   db.reason_codes ||= defaultReasonCodes(); db.settings ||= defaultSettings();
   db.orders.forEach(o=>{ if(o.status==='Picked up') o.status='Fulfilled'; });
   db.purchase_orders.forEach(p=>{ if(p.status==='Open') p.status='Sent'; if(p.status==='Received'&&p.qtyReceived==null) p.qtyReceived=p.qty; });
+  if(!db.history_v){ addHistory(); save(); }
   try{ const e=sessionStorage.getItem(SESSION_KEY); if(e && db.users.some(u=>u.email===e)) session={email:e}; }catch(e){}
   await wait(700); render(); hideLoader();
 })();
